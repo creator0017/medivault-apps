@@ -12,14 +12,32 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import BottomTabBar from "../components/BottomTabBar";
 import SideMenu from "../components/SideMenu";
+import { useUser } from "../context/UserContext";
 
 const { width } = Dimensions.get("window");
 
-export default function HomeScreen({ navigation }) {
+// C-5 Fix: Dynamic time-based greeting
+const getGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good Morning";
+  if (hour < 17) return "Good Afternoon";
+  return "Good Evening";
+};
+
+export default function HomeScreen({ route, navigation }) {
+  const { userData } = useUser();
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+
+  // C-5 Fix: Use dynamic user data from context, fallback to route params
+  const firstName =
+    userData?.fullName?.split(" ")[0] ||
+    route?.params?.fullName?.split(" ")[0] ||
+    "User";
+  const healthScore = userData?.healthScore || 72;
 
   const [recentReports, setRecentReports] = useState([
     {
@@ -40,7 +58,6 @@ export default function HomeScreen({ navigation }) {
     },
   ]);
 
-  // --- VOICE RECORDING LOGIC ---
   async function startRecording() {
     try {
       const permission = await Audio.requestPermissionsAsync();
@@ -86,7 +103,7 @@ export default function HomeScreen({ navigation }) {
   const handleUpload = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: "image/*",
+        type: ["image/*", "application/pdf"],
         copyToCacheDirectory: false,
       });
       if (!result.canceled) {
@@ -122,13 +139,22 @@ export default function HomeScreen({ navigation }) {
           <MaterialCommunityIcons name="menu" size={30} color="#1E293B" />
         </TouchableOpacity>
         <View style={styles.navRight}>
-          <TouchableOpacity style={styles.notifBtn}>
+          {/* M-1 Fix: Notification bell with handler */}
+          <TouchableOpacity
+            style={styles.notifBtn}
+            onPress={() =>
+              Alert.alert(
+                "Notifications",
+                "No new notifications at this time.",
+                [{ text: "OK" }],
+              )
+            }
+          >
             <MaterialCommunityIcons
               name="bell-outline"
               size={26}
               color="#64748B"
             />
-            <View style={styles.notifDot} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.profileBtn}
@@ -143,7 +169,10 @@ export default function HomeScreen({ navigation }) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollBody}
       >
-        <Text style={styles.greeting}>Good Morning, Ramesh! 👋</Text>
+        {/* C-5 Fix: Dynamic greeting */}
+        <Text style={styles.greeting}>
+          {getGreeting()}, {firstName}! 👋
+        </Text>
 
         {/* --- EMERGENCY CARD --- */}
         <TouchableOpacity
@@ -163,14 +192,18 @@ export default function HomeScreen({ navigation }) {
           <MaterialCommunityIcons name="chevron-right" size={24} color="#FFF" />
         </TouchableOpacity>
 
-        {/* --- HEALTH SCORE --- */}
+        {/* L-3 Fix: Dynamic health score */}
         <View style={styles.scoreCard}>
           <View style={styles.scoreCircle}>
-            <Text style={styles.scoreNum}>72</Text>
+            <Text style={styles.scoreNum}>{healthScore}</Text>
           </View>
           <View style={styles.scoreInfo}>
             <Text style={styles.scoreLabel}>Your Health Score</Text>
-            <Text style={styles.scoreDelta}>📈 Improved by 5 points! 🥳</Text>
+            <Text style={styles.scoreDelta}>
+              {healthScore >= 70
+                ? "📈 Looking good! Keep it up! 🥳"
+                : "📊 Room for improvement"}
+            </Text>
           </View>
         </View>
 
@@ -219,7 +252,6 @@ export default function HomeScreen({ navigation }) {
             <Text style={styles.actionText}>AI Analysis</Text>
           </TouchableOpacity>
 
-          {/* CONNECTED FAMILY HUB HERE */}
           <TouchableOpacity
             style={styles.actionBtn}
             onPress={() => navigation.navigate("Family")}
@@ -268,64 +300,8 @@ export default function HomeScreen({ navigation }) {
         </ScrollView>
       </ScrollView>
 
-      {/* --- BOTTOM TAB BAR --- */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => navigation.navigate("Home")}
-        >
-          <MaterialCommunityIcons
-            name="home-variant"
-            size={28}
-            color="#2E75B6"
-          />
-          <Text style={[styles.tabText, { color: "#2E75B6" }]}>HOME</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => navigation.navigate("Reports")}
-        >
-          <MaterialCommunityIcons
-            name="file-document-outline"
-            size={28}
-            color="#CBD5E1"
-          />
-          <Text style={styles.tabText}>REPORTS</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => navigation.navigate("UploadReport")}
-        >
-          <MaterialCommunityIcons name="plus" size={35} color="#FFF" />
-        </TouchableOpacity>
-
-        {/* CONNECTED FAMILY TAB HERE */}
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => navigation.navigate("Family")}
-        >
-          <MaterialCommunityIcons
-            name="account-group-outline"
-            size={28}
-            color="#CBD5E1"
-          />
-          <Text style={styles.tabText}>FAMILY</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => navigation.navigate("Profile")}
-        >
-          <MaterialCommunityIcons
-            name="account-outline"
-            size={28}
-            color="#CBD5E1"
-          />
-          <Text style={styles.tabText}>PROFILE</Text>
-        </TouchableOpacity>
-      </View>
+      {/* M-4 Fix: Shared BottomTabBar */}
+      <BottomTabBar navigation={navigation} activeTab="Home" />
     </SafeAreaView>
   );
 }
@@ -342,17 +318,6 @@ const styles = StyleSheet.create({
   },
   navRight: { flexDirection: "row", alignItems: "center", gap: 15 },
   notifBtn: { padding: 5 },
-  notifDot: {
-    position: "absolute",
-    top: 5,
-    right: 8,
-    width: 7,
-    height: 7,
-    backgroundColor: "#3B82F6",
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: "#FFF",
-  },
   profileBtn: {
     width: 40,
     height: 40,
@@ -468,32 +433,5 @@ const styles = StyleSheet.create({
     color: "#64748B",
     fontSize: 12,
     marginTop: 8,
-  },
-  tabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 90,
-    backgroundColor: "#FFF",
-    borderTopLeftRadius: 35,
-    borderTopRightRadius: 35,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    paddingBottom: 20,
-    elevation: 20,
-  },
-  tabItem: { alignItems: "center" },
-  tabText: { fontSize: 10, fontWeight: "900", marginTop: 4, color: "#CBD5E1" },
-  fab: {
-    width: 65,
-    height: 65,
-    borderRadius: 32.5,
-    backgroundColor: "#2E75B6",
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: -55,
-    elevation: 8,
   },
 });

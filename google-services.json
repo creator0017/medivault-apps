@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "276179383255",
+    "project_id": "medvault-d2526",
+    "storage_bucket": "medvault-d2526.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:276179383255:android:2a5f1ed674aab74ef85192",
+        "android_client_info": {
+          "package_name": "com.anonymous.medivaultfinal"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "276179383255-nhvvpnhsm5ganjt270iofg68sv58fimv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtK9NGfx1oS2MDAuZFk_rcnyEOIeOlRVQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "276179383255-nhvvpnhsm5ganjt270iofg68sv58fimv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

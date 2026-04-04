@@ -8,8 +8,10 @@ import {
   View,
 } from "react-native";
 
-export default function SuccessScreen({ navigation }) {
-  // Component for the "Next Steps" checklist
+export default function SuccessScreen({ route, navigation }) {
+  // C-4 Fix: Accept and forward route params
+  const { fullName, patientId } = route.params || {};
+
   const StepCard = ({ icon, title, color }) => (
     <View style={[styles.stepCard, { borderLeftColor: color }]}>
       <MaterialCommunityIcons name="check-circle" size={22} color={color} />
@@ -21,7 +23,6 @@ export default function SuccessScreen({ navigation }) {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Success Icon */}
         <View style={styles.iconContainer}>
           <View style={styles.circleBg}>
             <MaterialCommunityIcons
@@ -32,16 +33,15 @@ export default function SuccessScreen({ navigation }) {
           </View>
         </View>
 
-        {/* Text Content */}
         <View style={styles.textContainer}>
           <Text style={styles.tag}>REGISTRATION SUCCESSFUL</Text>
           <Text style={styles.title}>You're all set!</Text>
           <Text style={styles.subtitle}>
             Welcome to <Text style={styles.brandText}>MediVault</Text>
+            {fullName ? `, ${fullName.split(" ")[0]}` : ""}
           </Text>
         </View>
 
-        {/* Next Steps List */}
         <View style={styles.listSection}>
           <Text style={styles.listLabel}>SUGGESTED NEXT STEPS</Text>
           <StepCard title="Upload Medical Report" color="#3B82F6" />
@@ -49,12 +49,12 @@ export default function SuccessScreen({ navigation }) {
           <StepCard title="Add Family Member" color="#10B981" />
         </View>
 
-        {/* The Connection Button */}
         <TouchableOpacity
           style={styles.mainBtn}
           activeOpacity={0.8}
-          // LOGIC: navigation.replace clears the login history
-          onPress={() => navigation.replace("Home")}
+          onPress={() =>
+            navigation.replace("Home", { fullName, patientId })
+          }
         >
           <Text style={styles.mainBtnText}>Go to Dashboard</Text>
           <MaterialCommunityIcons name="arrow-right" size={22} color="#FFF" />

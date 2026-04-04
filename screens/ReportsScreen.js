@@ -1,21 +1,25 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useState } from "react";
 import {
-    FlatList,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  FlatList,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import BottomTabBar from "../components/BottomTabBar";
 
 export default function ReportsScreen({ navigation }) {
-  // Mock data to show what it looks like
+  // M-6 Fix: Active tab state for filtering
+  const [activeFilter, setActiveFilter] = useState("All");
+
   const reports = [
     {
       id: "1",
       title: "Blood Test Results",
       date: "24 MAR, 2026",
-      type: "PDF",
+      type: "Lab",
       color: "#FEE2E2",
       icon: "water",
     },
@@ -23,7 +27,7 @@ export default function ReportsScreen({ navigation }) {
       id: "2",
       title: "Chest X-Ray",
       date: "15 MAR, 2026",
-      type: "Image",
+      type: "Lab",
       color: "#DBEAFE",
       icon: "skull",
     },
@@ -31,10 +35,22 @@ export default function ReportsScreen({ navigation }) {
       id: "3",
       title: "Prescription - Cardiologist",
       date: "10 MAR, 2026",
-      type: "PDF",
+      type: "Prescription",
       color: "#FEF3C7",
       icon: "pill",
     },
+  ];
+
+  // M-6 Fix: Filter reports based on active tab
+  const filteredReports =
+    activeFilter === "All"
+      ? reports
+      : reports.filter((r) => r.type === activeFilter);
+
+  const TABS = [
+    { label: "All Reports", filter: "All" },
+    { label: "Prescriptions", filter: "Prescription" },
+    { label: "Lab Results", filter: "Lab" },
   ];
 
   return (
@@ -54,16 +70,43 @@ export default function ReportsScreen({ navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/* M-6 Fix: Functional filter tabs */}
       <View style={styles.tabContainer}>
-        <Text style={styles.tabActive}>All Reports</Text>
-        <Text style={styles.tabInactive}>Prescriptions</Text>
-        <Text style={styles.tabInactive}>Lab Results</Text>
+        {TABS.map((tab) => (
+          <TouchableOpacity
+            key={tab.filter}
+            onPress={() => setActiveFilter(tab.filter)}
+          >
+            <Text
+              style={
+                activeFilter === tab.filter
+                  ? styles.tabActive
+                  : styles.tabInactive
+              }
+            >
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       <FlatList
-        data={reports}
-        contentContainerStyle={{ padding: 20 }}
+        data={filteredReports}
+        contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
         keyExtractor={(item) => item.id}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons
+              name="file-document-outline"
+              size={50}
+              color="#CBD5E1"
+            />
+            <Text style={styles.emptyText}>
+              No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""}{" "}
+              reports found
+            </Text>
+          </View>
+        }
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.reportCard}>
             <View style={[styles.iconBox, { backgroundColor: item.color }]}>
@@ -87,6 +130,9 @@ export default function ReportsScreen({ navigation }) {
           </TouchableOpacity>
         )}
       />
+
+      {/* M-4 Fix: Shared BottomTabBar */}
+      <BottomTabBar navigation={navigation} activeTab="Reports" />
     </SafeAreaView>
   );
 }
@@ -112,7 +158,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     paddingHorizontal: 20,
     marginTop: 15,
-    gap: 15,
+    gap: 10,
   },
   tabActive: {
     backgroundColor: "#2E75B6",
@@ -156,5 +202,15 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
     marginTop: 3,
     fontWeight: "600",
+  },
+  emptyState: {
+    alignItems: "center",
+    paddingTop: 60,
+  },
+  emptyText: {
+    color: "#94A3B8",
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 15,
   },
 });

@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
+  Alert,
   Dimensions,
   Modal,
   ScrollView,
@@ -8,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useUser } from "../context/UserContext";
 
 const { width, height } = Dimensions.get("window");
 
@@ -43,10 +45,30 @@ const MenuItem = ({ icon, title, active = false, onPress }) => (
 );
 
 export default function SideMenu({ visible, onClose, navigation }) {
-  // Navigation Helper to close menu then navigate
+  const { userData, signOut } = useUser();
+
   const handleNavigation = (routeName) => {
-    onClose(); // Close the drawer first
+    onClose();
     navigation.navigate(routeName);
+  };
+
+  // C-3 Fix: Proper Firebase signOut
+  const handleSignOut = () => {
+    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+      { text: "Cancel" },
+      {
+        text: "Sign Out",
+        onPress: async () => {
+          onClose();
+          try {
+            await signOut();
+            navigation.replace("Login");
+          } catch (error) {
+            Alert.alert("Error", "Could not sign out.");
+          }
+        },
+      },
+    ]);
   };
 
   return (
@@ -72,8 +94,12 @@ export default function SideMenu({ visible, onClose, navigation }) {
               />
             </View>
             <View>
-              <Text style={styles.userName}>Rajesh Kumar</Text>
-              <Text style={styles.userId}>Patient ID: MV-728103</Text>
+              <Text style={styles.userName}>
+                {userData?.fullName || "MediVault User"}
+              </Text>
+              <Text style={styles.userId}>
+                Patient ID: {userData?.patientId || "---"}
+              </Text>
             </View>
           </View>
 
@@ -125,10 +151,7 @@ export default function SideMenu({ visible, onClose, navigation }) {
             <MenuItem
               icon="logout"
               title="Sign Out"
-              onPress={() => {
-                onClose();
-                navigation.navigate("Login");
-              }}
+              onPress={handleSignOut}
             />
           </ScrollView>
 

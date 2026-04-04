@@ -15,21 +15,22 @@ import {
     View,
 } from "react-native";
 import QRCode from "react-native-qrcode-svg";
+import EditModal from "../components/EditModal";
+import { useUser } from "../context/UserContext";
 
 const { width } = Dimensions.get("window");
 
 export default function EmergencyScreen({ navigation }) {
-  // --- EMERGENCY LOGIC: SECURITY ---
-  const [isAuthorized, setIsAuthorized] = useState(true); // Set to true for user view
+  const { userData } = useUser();
   const [isEditing, setIsEditing] = useState(false);
 
-  // --- DATA STATE (Exactly matching your Web Code) ---
+  // H-1 Fix: Use real data from UserContext
   const [medicalInfo, setMedicalInfo] = useState({
-    name: "Ramesh Kumar",
+    name: userData?.fullName || "User",
     bloodGroup: "O+",
     age: "55",
     weight: "96",
-    patientId: "MV-9921",
+    patientId: userData?.patientId || "MV-000000",
     emergencyPin: "1234",
   });
 
@@ -64,6 +65,49 @@ export default function EmergencyScreen({ navigation }) {
   const [contacts] = useState([
     { id: "1", name: "Rajesh (Son)", phone: "9876543210" },
   ]);
+
+  // M-7 Fix: EditModal state for in-place editing
+  const [editModal, setEditModal] = useState({
+    visible: false,
+    title: "",
+    field: "",
+    target: null,
+    initialValue: "",
+  });
+
+  const openInfoEdit = (label, field) => {
+    setEditModal({
+      visible: true,
+      title: `Edit ${label}`,
+      field,
+      target: "info",
+      initialValue: medicalInfo[field],
+    });
+  };
+
+  const openConditionEdit = (condId, label, field) => {
+    const cond = conditions.find((c) => c.id === condId);
+    setEditModal({
+      visible: true,
+      title: `Edit ${label}`,
+      field,
+      target: condId,
+      initialValue: cond?.[field] || "",
+    });
+  };
+
+  const handleEditSave = (value) => {
+    if (editModal.target === "info") {
+      setMedicalInfo({ ...medicalInfo, [editModal.field]: value });
+    } else {
+      setConditions(
+        conditions.map((c) =>
+          c.id === editModal.target ? { ...c, [editModal.field]: value } : c,
+        ),
+      );
+    }
+    setEditModal({ ...editModal, visible: false });
+  };
 
   // --- PDF GENERATION (Pro Web Formatting) ---
   const generatePDF = async () => {
@@ -134,20 +178,36 @@ export default function EmergencyScreen({ navigation }) {
           </Text>
 
           <View style={styles.statsRow}>
-            <View style={styles.statItem}>
+            <TouchableOpacity
+              style={styles.statItem}
+              disabled={!isEditing}
+              onPress={() => openInfoEdit("Blood Group", "bloodGroup")}
+            >
               <Text style={styles.statLabel}>BLOOD GROUP</Text>
-              <View style={styles.badge}>
+              <View style={[styles.badge, isEditing && styles.editableBadge]}>
                 <Text style={styles.badgeText}>{medicalInfo.bloodGroup}</Text>
               </View>
-            </View>
-            <View style={styles.statItem}>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.statItem}
+              disabled={!isEditing}
+              onPress={() => openInfoEdit("Age", "age")}
+            >
               <Text style={styles.statLabel}>AGE</Text>
-              <Text style={styles.statVal}>{medicalInfo.age} Years</Text>
-            </View>
-            <View style={styles.statItem}>
+              <Text style={[styles.statVal, isEditing && styles.editableVal]}>
+                {medicalInfo.age} Years
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.statItem}
+              disabled={!isEditing}
+              onPress={() => openInfoEdit("Weight (kg)", "weight")}
+            >
               <Text style={styles.statLabel}>WEIGHT</Text>
-              <Text style={styles.statVal}>{medicalInfo.weight} kg</Text>
-            </View>
+              <Text style={[styles.statVal, isEditing && styles.editableVal]}>
+                {medicalInfo.weight} kg
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -173,6 +233,15 @@ export default function EmergencyScreen({ navigation }) {
                 <Text style={styles.condTitle}>{c.title}</Text>
                 <Text style={styles.condSub}>{c.subtitle}</Text>
               </View>
+              {isEditing && (
+                <TouchableOpacity
+                  onPress={() => openConditionEdit(c.id, "Condition", "title")}
+                  style={styles.editChip}
+                >
+                  <MaterialCommunityIcons name="pencil" size={14} color="#2E75B6" />
+                  <Text style={styles.editChipText}>Edit</Text>
+                </TouchableOpacity>
+              )}
             </View>
             <View style={styles.historyBox}>
               <Text style={styles.historyText}>
@@ -181,6 +250,15 @@ export default function EmergencyScreen({ navigation }) {
                 </Text>
                 {c.history}
               </Text>
+              {isEditing && (
+                <TouchableOpacity
+                  onPress={() => openConditionEdit(c.id, "History", "history")}
+                  style={[styles.editChip, { marginTop: 6 }]}
+                >
+                  <MaterialCommunityIcons name="pencil" size={14} color="#2E75B6" />
+                  <Text style={styles.editChipText}>Edit history</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         ))}
@@ -251,14 +329,19 @@ export default function EmergencyScreen({ navigation }) {
           <Text style={styles.qrLabel}>SCAN FOR FULL MEDICAL HISTORY</Text>
           <View style={styles.qrContainer}>
             <QRCode
-              value={`https://medivault-final.vercel.app/view?id=${medicalInfo.patientId}`}
+              value={`BEGIN:MEDIVAULT\nNAME:${medicalInfo.name}\nID:${medicalInfo.patientId}\nBLOOD:${medicalInfo.bloodGroup}\nAGE:${medicalInfo.age}\nEND:MEDIVAULT`}
               size={150}
             />
           </View>
           <TouchableOpacity
-            onPress={() => Alert.alert("Success", "QR Code saved to gallery")}
+            onPress={async () => {
+              try {
+                const { uri } = await Print.printToFileAsync({ html: `<html><body style="text-align:center;padding:50px;"><h2>MediVault Emergency</h2><p>${medicalInfo.name} | ${medicalInfo.patientId}</p><p>Blood: ${medicalInfo.bloodGroup} | Age: ${medicalInfo.age}</p></body></html>` });
+                await Sharing.shareAsync(uri);
+              } catch (e) { Alert.alert("Error", "Could not share."); }
+            }}
           >
-            <Text style={styles.qrDownload}>Download QR Code</Text>
+            <Text style={styles.qrDownload}>Share Emergency Info</Text>
           </TouchableOpacity>
           <Text style={styles.qrFooter}>
             Authorized medical personnel only.
@@ -272,6 +355,16 @@ export default function EmergencyScreen({ navigation }) {
           <Text style={styles.pdfText}>SAVE MEDICAL RECORD PDF</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* M-7 Fix: Cross-platform EditModal for in-place editing */}
+      <EditModal
+        visible={editModal.visible}
+        title={editModal.title}
+        initialValue={editModal.initialValue}
+        placeholder="Enter value"
+        onCancel={() => setEditModal({ ...editModal, visible: false })}
+        onSave={handleEditSave}
+      />
     </SafeAreaView>
   );
 }
@@ -490,5 +583,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginLeft: 10,
     letterSpacing: 1,
+  },
+  editableBadge: {
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.6)",
+    borderStyle: "dashed",
+  },
+  editableVal: {
+    textDecorationLine: "underline",
+    textDecorationStyle: "dashed",
+    opacity: 0.85,
+  },
+  editChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  editChipText: {
+    fontSize: 11,
+    color: "#2E75B6",
+    fontWeight: "700",
   },
 });

@@ -1,27 +1,27 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import { doc, updateDoc } from "firebase/firestore";
 import { useState } from "react";
 import {
-    Alert,
-    Image,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
+import BottomTabBar from "../components/BottomTabBar";
+import EditModal from "../components/EditModal";
+import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
 export default function ProfileScreen({ navigation }) {
-  // --- STATE MANAGEMENT ---
+  const { userData, signOut } = useUser();
+
+  // H-1 Fix: Use real data from Firestore via UserContext
   const [profile, setProfile] = useState({
-    name: "Ramesh Kumar",
-    id: "MV-882910",
-    age: "55",
-    bloodGroup: "O+",
-    phone: "+91 98765 43210",
-    email: "ramesh.k@medivault.in",
     avatar: null,
   });
 
@@ -31,9 +31,14 @@ export default function ProfileScreen({ navigation }) {
     allergies: "Penicillin",
   });
 
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // C-6 Fix: EditModal state (replaces Alert.prompt)
+  const [editModal, setEditModal] = useState({
+    visible: false,
+    title: "",
+    field: "",
+    initialValue: "",
+  });
 
-  // --- LOGIC HANDLERS ---
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -47,40 +52,55 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
-  const handleChangePassword = () => {
-    Alert.prompt("Change Password", "Enter your new password", [
-      { text: "Cancel", style: "cancel" },
+  // C-6 Fix: Cross-platform edit handler using EditModal
+  const openEdit = (title, field, currentValue) => {
+    setEditModal({
+      visible: true,
+      title: `Edit ${title}`,
+      field,
+      initialValue: currentValue,
+    });
+  };
+
+  const handleEditSave = async (value) => {
+    const field = editModal.field;
+    if (field === "password") {
+      Alert.alert("Success", "Password update would require re-authentication.");
+    } else {
+      setClinical({ ...clinical, [field]: value });
+      // Persist to Firestore if user is authenticated
+      if (userData?.uid) {
+        try {
+          await updateDoc(doc(db, "users", userData.uid), {
+            [`clinical.${field}`]: value,
+          });
+        } catch (e) {
+          console.log("Update error:", e);
+        }
+      }
+    }
+    setEditModal({ ...editModal, visible: false });
+  };
+
+  // C-3 Fix: Proper Firebase signOut
+  const handleLogout = () => {
+    Alert.alert("Logout", "Are you sure?", [
+      { text: "Cancel" },
       {
-        text: "Update",
-        onPress: () => Alert.alert("Success", "Password updated!"),
+        text: "Logout",
+        onPress: async () => {
+          try {
+            await signOut();
+            navigation.replace("Login");
+          } catch (error) {
+            Alert.alert("Error", "Could not sign out. Please try again.");
+          }
+        },
       },
     ]);
   };
 
-  const handleEditClinical = (field, currentVal) => {
-    Alert.prompt(
-      `Edit ${field}`,
-      `Update your ${field}`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Save",
-          onPress: (text) => {
-            const key = field.toLowerCase().includes("condition")
-              ? "condition"
-              : field.toLowerCase().includes("meds")
-                ? "meds"
-                : "allergies";
-            setClinical({ ...clinical, [key]: text });
-          },
-        },
-      ],
-      "plain-text",
-      currentVal,
-    );
-  };
-
-  // --- REUSABLE ROW COMPONENT ---
+  // Reusable row component
   const SettingRow = ({
     icon,
     title,
@@ -110,7 +130,6 @@ export default function ProfileScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* HEADER: Moved down 5% via spacer */}
       <View style={styles.headerSpacer} />
       <View style={styles.header}>
         <TouchableOpacity
@@ -127,7 +146,7 @@ export default function ProfileScreen({ navigation }) {
         contentContainerStyle={styles.scrollBody}
         showsVerticalScrollIndicator={false}
       >
-        {/* AVATAR SECTION */}
+        {/* AVATAR SECTION — H-1 Fix: Dynamic data */}
         <View style={styles.avatarSection}>
           <View style={styles.avatarContainer}>
             <View style={styles.avatarCircle}>
@@ -148,10 +167,14 @@ export default function ProfileScreen({ navigation }) {
               <MaterialCommunityIcons name="camera" size={18} color="#FFF" />
             </TouchableOpacity>
           </View>
-          <Text style={styles.healthId}>{profile.id}</Text>
-          <Text style={styles.userName}>{profile.name}</Text>
+          <Text style={styles.healthId}>
+            {userData?.patientId || "MV-000000"}
+          </Text>
+          <Text style={styles.userName}>
+            {userData?.fullName || "Loading..."}
+          </Text>
           <Text style={styles.userStats}>
-            Age {profile.age} | {profile.bloodGroup} | Male
+            {userData?.phone || ""} | {userData?.email || ""}
           </Text>
         </View>
 
@@ -161,19 +184,19 @@ export default function ProfileScreen({ navigation }) {
           <SettingRow
             icon="phone"
             title="Phone Number"
-            value={profile.phone}
-            onPress={() => Alert.alert("Phone", profile.phone)}
+            value={userData?.phone || "Not set"}
           />
           <SettingRow
             icon="email"
             title="Email"
-            value={profile.email}
-            onPress={() => Alert.alert("Email", profile.email)}
+            value={userData?.email || "Not set"}
           />
           <SettingRow
             icon="lock-reset"
             title="Change Password"
-            onPress={handleChangePassword}
+            onPress={() =>
+              openEdit("Password", "password", "")
+            }
             isLast
           />
         </View>
@@ -186,47 +209,54 @@ export default function ProfileScreen({ navigation }) {
             title="Primary Condition"
             value={clinical.condition}
             color="#EF4444"
-            onPress={() => handleEditClinical("Condition", clinical.condition)}
+            onPress={() =>
+              openEdit("Condition", "condition", clinical.condition)
+            }
           />
           <SettingRow
             icon="pill"
             title="Medications"
             value={clinical.meds}
             color="#10B981"
-            onPress={() => handleEditClinical("Meds", clinical.meds)}
+            onPress={() => openEdit("Medications", "meds", clinical.meds)}
           />
           <SettingRow
             icon="alert-octagon"
             title="Allergies"
             value={clinical.allergies}
             color="#F59E0B"
-            onPress={() => handleEditClinical("Allergies", clinical.allergies)}
+            onPress={() =>
+              openEdit("Allergies", "allergies", clinical.allergies)
+            }
             isLast
           />
         </View>
 
-        {/* APP PREFERENCES */}
+        {/* APP PREFERENCES — M-2/M-3 Fix: Mark as coming soon */}
         <Text style={styles.sectionLabel}>APP PREFERENCES</Text>
         <View style={styles.card}>
-          <View style={styles.row}>
-            <View style={[styles.iconBg, { backgroundColor: "#64748B15" }]}>
-              <MaterialCommunityIcons
-                name="theme-light-dark"
-                size={22}
-                color="#64748B"
-              />
-            </View>
-            <Text style={[styles.rowTitle, { flex: 1 }]}>Dark Mode</Text>
-            <Switch value={isDarkMode} onValueChange={setIsDarkMode} />
-          </View>
-          <View style={styles.divider} />
+          <SettingRow
+            icon="theme-light-dark"
+            title="Dark Mode"
+            value="Coming Soon"
+            color="#64748B"
+            onPress={() =>
+              Alert.alert(
+                "Coming Soon",
+                "Dark mode will be available in a future update.",
+              )
+            }
+          />
           <SettingRow
             icon="translate"
             title="Language"
             value="English"
             color="#64748B"
             onPress={() =>
-              Alert.alert("Language", "Select: English, Hindi, or Spanish")
+              Alert.alert(
+                "Coming Soon",
+                "Multi-language support will be available in a future update.",
+              )
             }
             isLast
           />
@@ -238,10 +268,8 @@ export default function ProfileScreen({ navigation }) {
           <SettingRow
             icon="account-group"
             title="Manage Family Members"
-            value="2 Active"
-            onPress={() =>
-              Alert.alert("Family", "Managing Rajesh and Priya's access.")
-            }
+            value="View Hub"
+            onPress={() => navigation.navigate("Family")}
             isLast
           />
         </View>
@@ -260,16 +288,12 @@ export default function ProfileScreen({ navigation }) {
               )
             }
           />
+          {/* C-3 Fix: Proper logout */}
           <SettingRow
             icon="logout"
             title="Logout"
             color="#EF4444"
-            onPress={() =>
-              Alert.alert("Logout", "Are you sure?", [
-                { text: "Cancel" },
-                { text: "Logout", onPress: () => navigation.replace("Login") },
-              ])
-            }
+            onPress={handleLogout}
             isLast
           />
         </View>
@@ -277,41 +301,25 @@ export default function ProfileScreen({ navigation }) {
         <View style={{ height: 120 }} />
       </ScrollView>
 
-      {/* --- TAB BAR --- */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => navigation.navigate("Home")}
-        >
-          <MaterialCommunityIcons
-            name="home-variant-outline"
-            size={28}
-            color="#CBD5E1"
-          />
-          <Text style={styles.tabText}>HOME</Text>
-        </TouchableOpacity>
+      {/* C-6 Fix: Cross-platform EditModal */}
+      <EditModal
+        visible={editModal.visible}
+        title={editModal.title}
+        initialValue={editModal.initialValue}
+        placeholder="Enter new value"
+        onCancel={() => setEditModal({ ...editModal, visible: false })}
+        onSave={handleEditSave}
+      />
 
-        <TouchableOpacity style={styles.tabItem}>
-          <MaterialCommunityIcons
-            name="file-document-outline"
-            size={28}
-            color="#CBD5E1"
-          />
-          <Text style={styles.tabText}>REPORTS</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.tabItem}>
-          <MaterialCommunityIcons name="account" size={28} color="#2E75B6" />
-          <Text style={[styles.tabText, { color: "#2E75B6" }]}>PROFILE</Text>
-        </TouchableOpacity>
-      </View>
+      {/* M-4 Fix: Shared BottomTabBar */}
+      <BottomTabBar navigation={navigation} activeTab="Profile" />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
-  headerSpacer: { height: "5%" }, // Moves everything down 5%
+  headerSpacer: { height: "5%" },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -357,7 +365,12 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
   userName: { fontSize: 24, fontWeight: "900", color: "#1E293B", marginTop: 5 },
-  userStats: { fontSize: 14, color: "#64748B", marginTop: 5 },
+  userStats: {
+    fontSize: 13,
+    color: "#64748B",
+    marginTop: 5,
+    textAlign: "center",
+  },
   sectionLabel: {
     fontSize: 11,
     fontWeight: "900",
@@ -387,20 +400,4 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
   rowValue: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
   divider: { height: 1, backgroundColor: "#F8FAFC", marginLeft: 70 },
-  tabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 90,
-    backgroundColor: "#FFF",
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    paddingBottom: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
-  },
-  tabItem: { alignItems: "center" },
-  tabText: { fontSize: 10, fontWeight: "900", marginTop: 4, color: "#CBD5E1" },
 });

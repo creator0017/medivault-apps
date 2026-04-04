@@ -16,10 +16,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 // Below I use standard View with conditional rendering for maximum compatibility.
 
 import Svg, { Circle, Line, Path } from "react-native-svg";
+import { useUser } from "../context/UserContext";
 
 const { width } = Dimensions.get("window");
 
 export default function FamilyScreen({ navigation }) {
+  const { userData } = useUser();
   const [view, setView] = useState("DASHBOARD"); // DASHBOARD, ADD, PROFILE
   const [addStep, setAddStep] = useState(1); // 1: Search, 2: Details
   const [patientIdInput, setPatientIdInput] = useState("");
@@ -96,7 +98,7 @@ export default function FamilyScreen({ navigation }) {
           />
           <Text style={styles.idLabel}>MY MEDIVAULT ID</Text>
         </View>
-        <Text style={styles.idText}>MV-728103</Text>
+        <Text style={styles.idText}>{userData?.patientId || "MV-000000"}</Text>
         <Text style={styles.idSub}>Share this with family members</Text>
       </View>
 
