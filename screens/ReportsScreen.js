@@ -1,7 +1,10 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useState } from "react";
+import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
+  Linking,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -9,39 +12,58 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
+import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
 export default function ReportsScreen({ navigation }) {
-  // M-6 Fix: Active tab state for filtering
+  const { userData } = useUser();
   const [activeFilter, setActiveFilter] = useState("All");
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const reports = [
-    {
-      id: "1",
-      title: "Blood Test Results",
-      date: "24 MAR, 2026",
-      type: "Lab",
-      color: "#FEE2E2",
-      icon: "water",
-    },
-    {
-      id: "2",
-      title: "Chest X-Ray",
-      date: "15 MAR, 2026",
-      type: "Lab",
-      color: "#DBEAFE",
-      icon: "skull",
-    },
-    {
-      id: "3",
-      title: "Prescription - Cardiologist",
-      date: "10 MAR, 2026",
-      type: "Prescription",
-      color: "#FEF3C7",
-      icon: "pill",
-    },
-  ];
+  useEffect(() => {
+    if (!userData?.uid) {
+      setLoading(false);
+      return;
+    }
 
-  // M-6 Fix: Filter reports based on active tab
+    const q = query(
+      collection(db, "users", userData.uid, "reports"),
+      orderBy("uploadedAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const records = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        const dateObj = data.uploadedAt ? data.uploadedAt.toDate() : new Date();
+        const dateStr = dateObj.toLocaleDateString("en-GB", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        }).toUpperCase();
+
+        const isPdf = data.type === "PDF" || data.url?.includes(".pdf");
+
+        return {
+          id: doc.id,
+          title: data.title || "Medical Report",
+          date: dateStr,
+          type: isPdf ? "Prescription" : "Lab",
+          color: isPdf ? "#FEF3C7" : "#DBEAFE",
+          icon: isPdf ? "pill" : "water",
+          url: data.url,
+        };
+      });
+      setReports(records);
+      setLoading(false);
+    }, (error) => {
+      console.log("Error fetching reports:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [userData]);
+
   const filteredReports =
     activeFilter === "All"
       ? reports
@@ -52,6 +74,14 @@ export default function ReportsScreen({ navigation }) {
     { label: "Prescriptions", filter: "Prescription" },
     { label: "Lab Results", filter: "Lab" },
   ];
+
+  const handleOpenReport = (url) => {
+    if (url) {
+      Linking.openURL(url).catch((err) =>
+        console.error("Couldn't load page", err)
+      );
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -90,46 +120,56 @@ export default function ReportsScreen({ navigation }) {
         ))}
       </View>
 
-      <FlatList
-        data={filteredReports}
-        contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
-        keyExtractor={(item) => item.id}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons
-              name="file-document-outline"
-              size={50}
-              color="#CBD5E1"
-            />
-            <Text style={styles.emptyText}>
-              No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""}{" "}
-              reports found
-            </Text>
-          </View>
-        }
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.reportCard}>
-            <View style={[styles.iconBox, { backgroundColor: item.color }]}>
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#2E75B6" />
+          <Text style={styles.loadingText}>Fetching Reports...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredReports}
+          contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
               <MaterialCommunityIcons
-                name={item.icon}
-                size={24}
-                color="#1E293B"
+                name="file-document-outline"
+                size={50}
+                color="#CBD5E1"
               />
-            </View>
-            <View style={{ flex: 1, marginLeft: 15 }}>
-              <Text style={styles.reportTitle}>{item.title}</Text>
-              <Text style={styles.reportDate}>
-                {item.date} • {item.type}
+              <Text style={styles.emptyText}>
+                No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""}{" "}
+                reports found
               </Text>
             </View>
-            <MaterialCommunityIcons
-              name="chevron-right"
-              size={24}
-              color="#CBD5E1"
-            />
-          </TouchableOpacity>
-        )}
-      />
+          }
+          renderItem={({ item }) => (
+            <TouchableOpacity 
+              style={styles.reportCard} 
+              onPress={() => handleOpenReport(item.url)}
+            >
+              <View style={[styles.iconBox, { backgroundColor: item.color }]}>
+                <MaterialCommunityIcons
+                  name={item.icon}
+                  size={24}
+                  color="#1E293B"
+                />
+              </View>
+              <View style={{ flex: 1, marginLeft: 15 }}>
+                <Text style={styles.reportTitle}>{item.title}</Text>
+                <Text style={styles.reportDate}>
+                  {item.date} • {item.type}
+                </Text>
+              </View>
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={24}
+                color="#CBD5E1"
+              />
+            </TouchableOpacity>
+          )}
+        />
+      )}
 
       {/* M-4 Fix: Shared BottomTabBar */}
       <BottomTabBar navigation={navigation} activeTab="Reports" />
@@ -212,5 +252,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     marginTop: 15,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    marginTop: 10,
+    color: "#64748B",
+    fontSize: 16,
+    fontWeight: "600",
   },
 });
