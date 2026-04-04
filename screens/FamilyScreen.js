@@ -3,6 +3,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -54,36 +55,88 @@ export default function FamilyScreen({ navigation }) {
     return unsub;
   }, [userData?.uid]);
 
-  // Load approved family members
+  // Load approved family members (both directions)
   useEffect(() => {
     if (!userData?.uid) return;
-    const q = query(
+    // People I sent requests to and were approved
+    const qSent = query(
       collection(db, "familyRequests"),
       where("fromUid", "==", userData.uid),
       where("status", "==", "approved")
     );
-    const unsub = onSnapshot(q, (snap) => {
-      setHousehold(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const unsubSent = onSnapshot(qSent, (snap) => {
+      const sent = snap.docs.map((d) => ({
+        id: d.id,
+        name: d.data().toName,
+        patientId: d.data().toPatientId,
+        role: "Family",
+        isAuthorized: true,
+        hba1c: "--",
+        status: "Stable",
+        ...d.data(),
+      }));
+      setHousehold((prev) => {
+        const others = prev.filter((m) => m._direction === "received");
+        return [...others, ...sent.map((s) => ({ ...s, _direction: "sent" }))];
+      });
     });
-    return unsub;
+    // People who sent requests to me and I approved (they can see my data)
+    const qReceived = query(
+      collection(db, "familyRequests"),
+      where("toUid", "==", userData.uid),
+      where("status", "==", "approved")
+    );
+    const unsubReceived = onSnapshot(qReceived, (snap) => {
+      const received = snap.docs.map((d) => ({
+        id: d.id,
+        name: d.data().fromName,
+        patientId: "--",
+        role: "Monitoring me",
+        isAuthorized: true,
+        hba1c: "--",
+        status: "Stable",
+        ...d.data(),
+        _direction: "received",
+      }));
+      setHousehold((prev) => {
+        const others = prev.filter((m) => m._direction === "sent");
+        return [...others, ...received];
+      });
+    });
+    return () => { unsubSent(); unsubReceived(); };
   }, [userData?.uid]);
 
   // --- HANDLERS ---
   const handleVerify = async () => {
-    if (!patientIdInput.trim()) return;
+    const trimmed = patientIdInput.trim().toUpperCase();
+    if (!trimmed) return;
+    if (trimmed === userData?.patientId) {
+      Alert.alert("Invalid", "You cannot add yourself as a family member.");
+      return;
+    }
     setIsVerifying(true);
     try {
-      const q = query(
-        collection(db, "users"),
-        where("patientId", "==", patientIdInput.trim().toUpperCase())
+      // Search publicProfiles — safe, no private health data exposed
+      const snap = await getDocs(
+        query(collection(db, "publicProfiles"), where("patientId", "==", trimmed))
       );
-      const { getDocs } = await import("firebase/firestore");
-      const snap = await getDocs(q);
       if (snap.empty) {
-        Alert.alert("Not Found", "No patient found with that ID.");
+        Alert.alert("Not Found", "No MediVault user found with Patient ID: " + trimmed);
       } else {
         const data = snap.docs[0].data();
-        setFoundPatient({ uid: snap.docs[0].id, ...data });
+        // Check if request already exists
+        const existing = await getDocs(
+          query(
+            collection(db, "familyRequests"),
+            where("fromUid", "==", userData.uid),
+            where("toUid", "==", data.uid)
+          )
+        );
+        if (!existing.empty) {
+          Alert.alert("Already Sent", "You already sent a request to this person.");
+          return;
+        }
+        setFoundPatient(data);
         setAddStep(2);
       }
     } catch (e) {
@@ -160,16 +213,24 @@ export default function FamilyScreen({ navigation }) {
           <Text style={styles.sectionTitle}>GRANT AUTHORIZATION</Text>
           {invitations.map((inv) => (
             <View key={inv.id} style={styles.requestCard}>
-              <View>
+              <View style={{ flex: 1 }}>
                 <Text style={styles.reqName}>{inv.fromName}</Text>
-                <Text style={styles.reqSub}>Wants to monitor you</Text>
+                <Text style={styles.reqSub}>Wants to view your health data</Text>
               </View>
               <View style={styles.reqActions}>
+                <TouchableOpacity
+                  style={styles.btnReject}
+                  onPress={async () => {
+                    await updateDoc(doc(db, "familyRequests", inv.id), { status: "rejected" });
+                  }}
+                >
+                  <MaterialCommunityIcons name="close" size={18} color="#EF4444" />
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.btnAccept}
                   onPress={() => handleAcceptInvite(inv)}
                 >
-                  <MaterialCommunityIcons name="check" size={20} color="#FFF" />
+                  <MaterialCommunityIcons name="check" size={18} color="#FFF" />
                 </TouchableOpacity>
               </View>
             </View>
@@ -530,5 +591,7 @@ const styles = StyleSheet.create({
   },
   reqName: { fontSize: 15, fontWeight: "bold", color: "#92400E" },
   reqSub: { fontSize: 11, color: "#B45309" },
+  reqActions: { flexDirection: "row", gap: 10, alignItems: "center" },
+  btnReject: { backgroundColor: "#FEE2E2", padding: 10, borderRadius: 12, borderWidth: 1, borderColor: "#FECACA" },
   btnAccept: { backgroundColor: "#10B981", padding: 10, borderRadius: 12 },
 });

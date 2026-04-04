@@ -206,6 +206,7 @@ export default function LoginScreen({ navigation }) {
       const generatedPatientId =
         "MV-" + Math.floor(100000 + Math.random() * 900000);
 
+      // Write private full profile
       await setDoc(doc(db, "users", user.uid), {
         uid: user.uid,
         fullName: fullName.trim(),
@@ -216,6 +217,13 @@ export default function LoginScreen({ navigation }) {
         phoneVerified: false,
         emailVerified: false,
         createdAt: serverTimestamp(),
+      });
+
+      // Write public profile — only name + patientId, used for family member search
+      await setDoc(doc(db, "publicProfiles", user.uid), {
+        fullName: fullName.trim(),
+        patientId: generatedPatientId,
+        uid: user.uid,
       });
 
       navigation.navigate("Verification", {

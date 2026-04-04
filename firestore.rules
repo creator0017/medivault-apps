@@ -3,17 +3,53 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users can only read/write their own profile document
+    // ─── USER PROFILES (private) ───────────────────────────────────────────
+    // Only the owner can read/write their full profile
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      // Reports subcollection
+      match /reports/{reportId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // AI analyses subcollection
+      match /aiAnalyses/{analysisId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
-    // Reports subcollection — only the owning user can access
-    match /users/{userId}/reports/{reportId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    // ─── PUBLIC PROFILES (for family member search) ────────────────────────
+    // Only stores: fullName, patientId — no sensitive health data
+    // Any signed-in user can READ, only owner can WRITE
+    match /publicProfiles/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Deny all other access by default
+    // ─── FAMILY REQUESTS ───────────────────────────────────────────────────
+    // fromUid sends a request to toUid
+    match /familyRequests/{requestId} {
+      // Any signed-in user can create a request they are the sender of
+      allow create: if request.auth != null
+                    && request.resource.data.fromUid == request.auth.uid;
+
+      // Both sender and receiver can read the request
+      allow read: if request.auth != null
+                  && (resource.data.fromUid == request.auth.uid
+                      || resource.data.toUid == request.auth.uid);
+
+      // Only the RECEIVER can update (accept/reject)
+      allow update: if request.auth != null
+                    && resource.data.toUid == request.auth.uid;
+
+      // Both parties can delete (cancel/remove)
+      allow delete: if request.auth != null
+                    && (resource.data.fromUid == request.auth.uid
+                        || resource.data.toUid == request.auth.uid);
+    }
+
+    // ─── DENY EVERYTHING ELSE ──────────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;
     }
