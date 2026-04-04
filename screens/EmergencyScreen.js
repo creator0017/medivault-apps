@@ -1,7 +1,8 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import { useState } from "react";
+import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { useEffect, useState } from "react";
 import {
     Alert,
     Dimensions,
@@ -17,6 +18,7 @@ import {
 import QRCode from "react-native-qrcode-svg";
 import EditModal from "../components/EditModal";
 import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
@@ -24,47 +26,58 @@ export default function EmergencyScreen({ navigation }) {
   const { userData } = useUser();
   const [isEditing, setIsEditing] = useState(false);
 
-  // H-1 Fix: Use real data from UserContext
   const [medicalInfo, setMedicalInfo] = useState({
     name: userData?.fullName || "User",
     bloodGroup: "O+",
-    age: "55",
-    weight: "96",
+    age: "",
+    weight: "",
     patientId: userData?.patientId || "MV-000000",
     emergencyPin: "1234",
   });
 
-  const [conditions, setConditions] = useState([
-    {
-      id: "1",
-      title: "Hypertension",
-      subtitle: "Chronic Condition",
-      history: "Diagnosed in 2015, managed with daily medication.",
-      type: "heart",
-    },
-    {
-      id: "2",
-      title: "Type 2 Diabetes",
-      subtitle: "Insulin Dependent",
-      history: "Diagnosed in 2018, requires regular monitoring.",
-      type: "drop",
-    },
-  ]);
+  const [conditions, setConditions] = useState([]);
+  const [allergies, setAllergies] = useState([]);
+  const [medications, setMedications] = useState([]);
+  const [contacts, setContacts] = useState([]);
 
-  const [allergies] = useState([
-    { id: "1", name: "Penicillin", severity: "SEVERE" },
-    { id: "2", name: "Aspirin", severity: "MODERATE" },
-  ]);
+  // Load emergency data from Firestore in real-time
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const unsub = onSnapshot(doc(db, "users", userData.uid), (snap) => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      const em = d.emergency || {};
+      setMedicalInfo({
+        name: d.fullName || "User",
+        bloodGroup: em.bloodGroup || "O+",
+        age: em.age || "",
+        weight: em.weight || "",
+        patientId: d.patientId || "MV-000000",
+        emergencyPin: em.emergencyPin || "1234",
+      });
+      setConditions(em.conditions || []);
+      setAllergies(em.allergies || []);
+      setMedications(em.medications || []);
+      setContacts(em.contacts || []);
+    });
+    return unsub;
+  }, [userData?.uid]);
 
-  const [medications] = useState([
-    { id: "1", name: "Metformin", dose: "500mg" },
-    { id: "2", name: "Glimepiride", dose: "1mg" },
-    { id: "3", name: "Amlodipine", dose: "5mg" },
-  ]);
-
-  const [contacts] = useState([
-    { id: "1", name: "Rajesh (Son)", phone: "9876543210" },
-  ]);
+  // Persist emergency data to Firestore
+  const saveToFirestore = async (updatedInfo, updatedConditions) => {
+    if (!userData?.uid) return;
+    try {
+      await updateDoc(doc(db, "users", userData.uid), {
+        "emergency.bloodGroup": updatedInfo.bloodGroup,
+        "emergency.age": updatedInfo.age,
+        "emergency.weight": updatedInfo.weight,
+        "emergency.emergencyPin": updatedInfo.emergencyPin,
+        "emergency.conditions": updatedConditions,
+      });
+    } catch (e) {
+      Alert.alert("Save Error", "Could not save changes.");
+    }
+  };
 
   // M-7 Fix: EditModal state for in-place editing
   const [editModal, setEditModal] = useState({
@@ -97,15 +110,18 @@ export default function EmergencyScreen({ navigation }) {
   };
 
   const handleEditSave = (value) => {
+    let newInfo = medicalInfo;
+    let newConditions = conditions;
     if (editModal.target === "info") {
-      setMedicalInfo({ ...medicalInfo, [editModal.field]: value });
+      newInfo = { ...medicalInfo, [editModal.field]: value };
+      setMedicalInfo(newInfo);
     } else {
-      setConditions(
-        conditions.map((c) =>
-          c.id === editModal.target ? { ...c, [editModal.field]: value } : c,
-        ),
+      newConditions = conditions.map((c) =>
+        c.id === editModal.target ? { ...c, [editModal.field]: value } : c,
       );
+      setConditions(newConditions);
     }
+    saveToFirestore(newInfo, newConditions);
     setEditModal({ ...editModal, visible: false });
   };
 
@@ -144,7 +160,7 @@ export default function EmergencyScreen({ navigation }) {
           <MaterialCommunityIcons name="arrow-left" size={28} color="#2E75B6" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>EMERGENCY CARD</Text>
-        <TouchableOpacity onPress={() => setIsEditing(!isEditing)}>
+        <TouchableOpacity onPress={() => { if (isEditing) saveToFirestore(medicalInfo, conditions); setIsEditing(!isEditing); }}>
           <MaterialCommunityIcons
             name={isEditing ? "check-circle" : "cog-outline"}
             size={28}

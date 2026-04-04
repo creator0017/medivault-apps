@@ -1,21 +1,22 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
-import * as DocumentPicker from "expo-document-picker";
-import { useState, useCallback } from "react";
+import { collection, onSnapshot, orderBy, query, limit } from "firebase/firestore";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Dimensions,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
 import SideMenu from "../components/SideMenu";
 import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
@@ -39,39 +40,39 @@ export default function HomeScreen({ route, navigation }) {
     "User";
   const healthScore = userData?.healthScore || 72;
 
-  const [recentReports, setRecentReports] = useState([
-    {
-      id: "1",
-      title: "Blood Test",
-      date: "15 Mar",
-      icon: "water",
-      color: "#FEE2E2",
-      iconColor: "#EF4444",
-    },
-    {
-      id: "2",
-      title: "X-Ray Chest",
-      date: "10 Mar",
-      icon: "radiology-box",
-      color: "#DBEAFE",
-      iconColor: "#3B82F6",
-    },
-    {
-      id: "3",
-      title: "Prescription",
-      date: "8 Mar",
-      icon: "pill",
-      color: "#D1FAE5",
-      iconColor: "#10B981",
-    },
-  ]);
+  const [recentReports, setRecentReports] = useState([]);
+
+  // Fetch real reports from Firestore
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const q = query(
+      collection(db, "users", userData.uid, "reports"),
+      orderBy("uploadedAt", "desc"),
+      limit(5)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const iconMap = { PDF: { icon: "file-pdf-box", color: "#FEE2E2", iconColor: "#EF4444" }, Image: { icon: "image", color: "#DBEAFE", iconColor: "#3B82F6" } };
+      setRecentReports(
+        snap.docs.map((d) => {
+          const data = d.data();
+          const style = iconMap[data.type] || { icon: "file-document", color: "#D1FAE5", iconColor: "#10B981" };
+          return {
+            id: d.id,
+            title: data.title || "Report",
+            date: data.uploadedAt?.toDate
+              ? data.uploadedAt.toDate().toLocaleDateString("en-IN", { day: "numeric", month: "short" })
+              : "Recent",
+            ...style,
+          };
+        })
+      );
+    });
+    return unsub;
+  }, [userData?.uid]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    // Simulate fetching latest data
-    setTimeout(() => {
-      setRefreshing(false);
-    }, 1500);
+    setTimeout(() => setRefreshing(false), 800);
   }, []);
 
   async function startRecording() {

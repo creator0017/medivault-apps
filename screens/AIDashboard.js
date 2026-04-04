@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as FileSystem from "expo-file-system";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -12,18 +13,21 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
-// C-1 Fix: Use environment variable for API key
 const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(API_KEY);
 
 export default function AIDashboard() {
   const route = useRoute();
   const navigation = useNavigation();
+  const { userData } = useUser();
   const { reportUri } = route.params || {};
 
   const [loading, setLoading] = useState(true);
   const [analysis, setAnalysis] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (reportUri) {
@@ -62,7 +66,6 @@ export default function AIDashboard() {
           throw new Error("Missing required fields");
         }
       } catch (parseError) {
-        console.warn("JSON parse failed, using fallback:", parseError);
         setAnalysis({
           testType: "Lab Report",
           value: "--",
@@ -73,12 +76,36 @@ export default function AIDashboard() {
       }
       setLoading(false);
     } catch (error) {
-      console.error("AI Error:", error);
       Alert.alert(
         "Analysis Error",
         "MediVault AI couldn't read the image. Please try again with a clearer photo.",
       );
       setLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!analysis || !userData?.uid) {
+      navigation.navigate("Home");
+      return;
+    }
+    setSaving(true);
+    try {
+      await addDoc(collection(db, "users", userData.uid, "aiAnalyses"), {
+        testType: analysis.testType,
+        value: analysis.value,
+        date: analysis.date,
+        lab: analysis.lab,
+        insight: analysis.insight,
+        analyzedAt: serverTimestamp(),
+      });
+      Alert.alert("Saved!", "AI analysis saved to your health records.", [
+        { text: "OK", onPress: () => navigation.navigate("Home") },
+      ]);
+    } catch (e) {
+      Alert.alert("Save Error", "Could not save analysis. " + e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -147,10 +174,15 @@ export default function AIDashboard() {
       )}
 
       <TouchableOpacity
-        style={styles.actionBtn}
-        onPress={() => navigation.navigate("Home")}
+        style={[styles.actionBtn, saving && { opacity: 0.7 }]}
+        onPress={handleSave}
+        disabled={saving}
       >
-        <Text style={styles.actionBtnText}>DONE & SAVE</Text>
+        {saving ? (
+          <ActivityIndicator color="#FFF" />
+        ) : (
+          <Text style={styles.actionBtnText}>DONE & SAVE</Text>
+        )}
       </TouchableOpacity>
     </ScrollView>
   );

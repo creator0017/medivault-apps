@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { doc, updateDoc } from "firebase/firestore";
-import { useState } from "react";
+import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Image,
@@ -26,10 +26,25 @@ export default function ProfileScreen({ navigation }) {
   });
 
   const [clinical, setClinical] = useState({
-    condition: "Type 2 Diabetes",
-    meds: "3 Active",
-    allergies: "Penicillin",
+    condition: "",
+    meds: "",
+    allergies: "",
   });
+
+  // Load clinical data from Firestore in real-time
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const unsub = onSnapshot(doc(db, "users", userData.uid), (snap) => {
+      if (!snap.exists()) return;
+      const c = snap.data().clinical || {};
+      setClinical({
+        condition: c.condition || "",
+        meds: c.meds || "",
+        allergies: c.allergies || "",
+      });
+    });
+    return unsub;
+  }, [userData?.uid]);
 
   // C-6 Fix: EditModal state (replaces Alert.prompt)
   const [editModal, setEditModal] = useState({

@@ -1,5 +1,15 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useState } from "react";
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -12,11 +22,9 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-// Note: If you are using standard React Native, replace motion with View/Animated
-// Below I use standard View with conditional rendering for maximum compatibility.
-
 import Svg, { Circle, Line, Path } from "react-native-svg";
 import { useUser } from "../context/UserContext";
+import { db } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
@@ -28,47 +36,91 @@ export default function FamilyScreen({ navigation }) {
   const [isVerifying, setIsVerifying] = useState(false);
   const [selectedMember, setSelectedMember] = useState(null);
 
-  // --- MOCK DATA ---
-  const [invitations, setInvitations] = useState([
-    { id: "inv-1", fromName: "Anjali Sharma", relationship: "Sister" },
-  ]);
+  const [invitations, setInvitations] = useState([]);
+  const [household, setHousehold] = useState([]);
+  const [foundPatient, setFoundPatient] = useState(null);
 
-  const [household, setHousehold] = useState([
-    {
-      id: "mem-1",
-      name: "Rajesh Kumar",
-      patientId: "MV-482910",
-      role: "Father",
-      status: "Warning",
-      hba1c: "7.8%",
-      isAuthorized: true,
-    },
-    {
-      id: "mem-2",
-      name: "Sunita Devi",
-      patientId: "MV-552109",
-      role: "Mother",
-      hba1c: "6.5%",
-      status: "Stable",
-      isAuthorized: false,
-    },
-  ]);
+  // Load incoming invites (requests where target = current user's patientId)
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const q = query(
+      collection(db, "familyRequests"),
+      where("toUid", "==", userData.uid),
+      where("status", "==", "pending")
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setInvitations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [userData?.uid]);
+
+  // Load approved family members
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const q = query(
+      collection(db, "familyRequests"),
+      where("fromUid", "==", userData.uid),
+      where("status", "==", "approved")
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setHousehold(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [userData?.uid]);
 
   // --- HANDLERS ---
-  const handleVerify = () => {
+  const handleVerify = async () => {
     if (!patientIdInput.trim()) return;
     setIsVerifying(true);
-    setTimeout(() => {
+    try {
+      const q = query(
+        collection(db, "users"),
+        where("patientId", "==", patientIdInput.trim().toUpperCase())
+      );
+      const { getDocs } = await import("firebase/firestore");
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        Alert.alert("Not Found", "No patient found with that ID.");
+      } else {
+        const data = snap.docs[0].data();
+        setFoundPatient({ uid: snap.docs[0].id, ...data });
+        setAddStep(2);
+      }
+    } catch (e) {
+      Alert.alert("Error", e.message);
+    } finally {
       setIsVerifying(false);
-      setAddStep(2);
-    }, 1500);
+    }
   };
 
-  const handleSendInvite = () => {
-    Alert.alert("Success", "Permission request sent!");
-    setView("DASHBOARD");
-    setAddStep(1);
-    setPatientIdInput("");
+  const handleSendInvite = async () => {
+    if (!foundPatient) return;
+    try {
+      await addDoc(collection(db, "familyRequests"), {
+        fromUid: userData.uid,
+        fromName: userData.fullName,
+        toUid: foundPatient.uid,
+        toName: foundPatient.fullName,
+        toPatientId: foundPatient.patientId,
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+      Alert.alert("Sent!", "Permission request sent to " + foundPatient.fullName);
+      setView("DASHBOARD");
+      setAddStep(1);
+      setPatientIdInput("");
+      setFoundPatient(null);
+    } catch (e) {
+      Alert.alert("Error", e.message);
+    }
+  };
+
+  const handleAcceptInvite = async (inv) => {
+    try {
+      await updateDoc(doc(db, "familyRequests", inv.id), { status: "approved" });
+    } catch (e) {
+      Alert.alert("Error", e.message);
+    }
   };
 
   const handleBack = () => {
@@ -115,20 +167,7 @@ export default function FamilyScreen({ navigation }) {
               <View style={styles.reqActions}>
                 <TouchableOpacity
                   style={styles.btnAccept}
-                  onPress={() => {
-                    setHousehold([
-                      ...household,
-                      {
-                        id: Date.now(),
-                        name: inv.fromName,
-                        isAuthorized: true,
-                        role: "Family",
-                        status: "Stable",
-                        hba1c: "--",
-                      },
-                    ]);
-                    setInvitations([]);
-                  }}
+                  onPress={() => handleAcceptInvite(inv)}
                 >
                   <MaterialCommunityIcons name="check" size={20} color="#FFF" />
                 </TouchableOpacity>
@@ -218,7 +257,7 @@ export default function FamilyScreen({ navigation }) {
               size={24}
               color="#10B981"
             />
-            <Text style={styles.verifiedText}>Verified: Ramesh Kumar</Text>
+            <Text style={styles.verifiedText}>Verified: {foundPatient?.fullName || ""}</Text>
           </View>
           <Text style={styles.viewSub}>
             Choose access level for this connection
