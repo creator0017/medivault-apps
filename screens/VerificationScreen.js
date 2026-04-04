@@ -1,6 +1,5 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { FirebaseRecaptchaVerifierModal } from "expo-firebase-recaptcha";
-import { signInWithPhoneNumber } from "firebase/auth";
+import rnAuth from "@react-native-firebase/auth";
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { useEffect, useRef, useState } from "react";
@@ -19,7 +18,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { app, auth, db, functions } from "../firebaseConfig";
+import { db, functions } from "../firebaseConfig";
 
 export default function VerificationScreen({ route, navigation }) {
   const { fullName, email, phone, patientId, uid } = route.params || {};
@@ -45,7 +44,6 @@ export default function VerificationScreen({ route, navigation }) {
   const [sendingPhone, setSendingPhone] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
 
-  const recaptchaVerifier = useRef(null);
   const phoneRefs = useRef([]);
   const emailRefs = useRef([]);
   const autoSentRef = useRef(false);
@@ -115,14 +113,6 @@ export default function VerificationScreen({ route, navigation }) {
   const sendPhoneOtp = async () => {
     if (!phone) return Alert.alert("Error", "No phone number found.");
     try {
-      if (!recaptchaVerifier.current) {
-        Alert.alert(
-          "Loading",
-          "Security module is still loading. Please try again in a second.",
-        );
-        return;
-      }
-
       setSendingPhone(true);
       // Normalize phone: strip non-digits, then ensure single +91 prefix
       const digits = phone.replace(/\D/g, "");
@@ -135,11 +125,8 @@ export default function VerificationScreen({ route, navigation }) {
         phoneNumber = "+91" + digits;
       }
 
-      const confirmationResult = await signInWithPhoneNumber(
-        auth,
-        phoneNumber,
-        recaptchaVerifier.current,
-      );
+      // Uses @react-native-firebase/auth — no reCAPTCHA modal needed on Android
+      const confirmationResult = await rnAuth().signInWithPhoneNumber(phoneNumber);
 
       setConfirmation(confirmationResult);
       setPhoneTimer(45);
@@ -463,12 +450,6 @@ export default function VerificationScreen({ route, navigation }) {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaVerifier}
-        firebaseConfig={app.options}
-        attemptInvisibleVerification={true}
-        androidHardwareAccelerationDisabled={false}
-      />
     </SafeAreaView>
   );
 }
