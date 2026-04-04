@@ -14,9 +14,9 @@ export default function OnboardingScreen({ navigation }) {
   const [activePage, setActivePage] = useState(0);
   const pagerRef = useRef(null);
 
-  // Verified Local Image Imports
   const step1Img = require("../assets/images/step1.png");
-  const step3Img = require("../assets/images/step3.png");
+  // Temporary fix: Pointing to step1.png because step3.png is corrupted and causing Android builds to fail
+  const step3Img = require("../assets/images/step1.png");
 
   const HealthTrackingItem = ({
     iconName,
