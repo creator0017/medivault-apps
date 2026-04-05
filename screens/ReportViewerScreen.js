@@ -1,6 +1,9 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
+  Alert,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,24 +15,43 @@ import WebView from "react-native-webview";
 export default function ReportViewerScreen({ route, navigation }) {
   const { url, title, type } = route.params;
 
-  // PDFs and images both load fine via WebView
-  // For PDFs, use Google Docs inline viewer as fallback
   const viewUrl =
     type === "PDF"
       ? `https://docs.google.com/gview?embedded=true&url=${encodeURIComponent(url)}`
       : url;
 
+  const handleDownload = async () => {
+    try {
+      const ext = type === "PDF" ? "pdf" : "jpg";
+      const localUri =
+        FileSystem.cacheDirectory +
+        `${(title || "report").replace(/\s/g, "_")}.${ext}`;
+      const { uri } = await FileSystem.downloadAsync(url, localUri);
+      await Sharing.shareAsync(uri, {
+        mimeType: type === "PDF" ? "application/pdf" : "image/jpeg",
+        dialogTitle: title || "MediVault Report",
+      });
+    } catch {
+      Alert.alert("Error", "Could not download this file.");
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.doneBtn}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn}>
           <MaterialCommunityIcons name="arrow-left" size={22} color="#1E293B" />
         </TouchableOpacity>
         <Text style={styles.title} numberOfLines={1}>{title || "Report"}</Text>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.doneBtn}>
-          <Text style={styles.doneBtnText}>Done</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={handleDownload} style={styles.iconBtn}>
+            <MaterialCommunityIcons name="download" size={22} color="#2E75B6" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn}>
+            <Text style={styles.doneBtnText}>Done</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* In-app viewer */}
@@ -43,9 +65,7 @@ export default function ReportViewerScreen({ route, navigation }) {
             <Text style={styles.loadingText}>Loading report...</Text>
           </View>
         )}
-        onError={() =>
-          navigation.goBack()
-        }
+        onError={() => navigation.goBack()}
       />
     </SafeAreaView>
   );
@@ -71,7 +91,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginHorizontal: 10,
   },
-  doneBtn: { padding: 4 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 4 },
+  iconBtn: { padding: 6 },
   doneBtnText: { color: "#2E75B6", fontWeight: "800", fontSize: 15 },
   webview: { flex: 1 },
   loadingOverlay: {

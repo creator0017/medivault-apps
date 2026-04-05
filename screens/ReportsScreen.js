@@ -11,6 +11,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
 import { useUser } from "../context/UserContext";
@@ -71,6 +73,17 @@ export default function ReportsScreen({ navigation }) {
       title: item.title,
       type: item.fileType,
     });
+  };
+
+  const handleDownload = async (item) => {
+    try {
+      const ext = item.fileType === "PDF" ? "pdf" : "jpg";
+      const localUri = FileSystem.cacheDirectory + `${item.title.replace(/\s/g, "_")}.${ext}`;
+      const { uri } = await FileSystem.downloadAsync(item.url, localUri);
+      await Sharing.shareAsync(uri, { mimeType: item.fileType === "PDF" ? "application/pdf" : "image/jpeg" });
+    } catch {
+      Alert.alert("Error", "Could not download this file.");
+    }
   };
 
   const handleDelete = (item) => {
@@ -147,17 +160,38 @@ export default function ReportsScreen({ navigation }) {
               <View style={[styles.iconBox, { backgroundColor: item.color }]}>
                 <MaterialCommunityIcons name={item.icon} size={24} color="#1E293B" />
               </View>
-              <View style={{ flex: 1, marginLeft: 15 }}>
+              <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={styles.reportTitle}>{item.title}</Text>
                 <Text style={styles.reportDate}>{item.date} • {item.type}</Text>
               </View>
-              <TouchableOpacity
-                onPress={() => handleDelete(item)}
-                style={styles.deleteBtn}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#EF4444" />
-              </TouchableOpacity>
+              <View style={styles.cardActions}>
+                {/* AI analyze — only for images */}
+                {item.fileType === "Image" && (
+                  <TouchableOpacity
+                    style={styles.aiBtn}
+                    onPress={() => navigation.navigate("AI", { reportUri: item.url })}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <MaterialCommunityIcons name="robot-outline" size={20} color="#8B5CF6" />
+                  </TouchableOpacity>
+                )}
+                {/* Download */}
+                <TouchableOpacity
+                  style={styles.dlBtn}
+                  onPress={() => handleDownload(item)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <MaterialCommunityIcons name="download-outline" size={20} color="#2E75B6" />
+                </TouchableOpacity>
+                {/* Delete */}
+                <TouchableOpacity
+                  onPress={() => handleDelete(item)}
+                  style={styles.deleteBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <MaterialCommunityIcons name="trash-can-outline" size={20} color="#EF4444" />
+                </TouchableOpacity>
+              </View>
             </TouchableOpacity>
           )}
         />
@@ -207,6 +241,9 @@ const styles = StyleSheet.create({
   iconBox: { width: 50, height: 50, borderRadius: 15, justifyContent: "center", alignItems: "center" },
   reportTitle: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
   reportDate: { fontSize: 11, color: "#94A3B8", marginTop: 3, fontWeight: "600" },
+  cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  aiBtn: { padding: 6, backgroundColor: "#F5F3FF", borderRadius: 10 },
+  dlBtn: { padding: 6, backgroundColor: "#EFF6FF", borderRadius: 10 },
   deleteBtn: { padding: 6 },
   emptyState: { alignItems: "center", paddingTop: 60 },
   emptyText: { color: "#94A3B8", fontSize: 14, fontWeight: "600", marginTop: 15 },

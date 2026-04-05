@@ -50,12 +50,17 @@ Return ONLY valid JSON in this exact format (no markdown, no code blocks):
 }`;
 
 // ─── Status config ────────────────────────────────────────────────────────────
-const STATUS_CONFIG = {
+const STATUS_MAP = {
   normal:     { color: "#22C55E", bg: "#DCFCE7", label: "Normal",     icon: "check-circle" },
   borderline: { color: "#F59E0B", bg: "#FEF3C7", label: "Borderline", icon: "alert-circle" },
   high:       { color: "#EF4444", bg: "#FEE2E2", label: "High",       icon: "close-circle" },
+  abnormal:   { color: "#EF4444", bg: "#FEE2E2", label: "Abnormal",   icon: "close-circle" },
   low:        { color: "#3B82F6", bg: "#DBEAFE", label: "Low",        icon: "arrow-down-circle" },
 };
+const STATUS_CONFIG = new Proxy(STATUS_MAP, {
+  get: (target, key) =>
+    target[String(key).toLowerCase()] || target.normal,
+});
 
 export default function AIDashboard() {
   const route = useRoute();
@@ -107,7 +112,16 @@ export default function AIDashboard() {
       setStep("scanning");
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-      const base64Data = await FileSystem.readAsStringAsync(reportUri, {
+      // If it's a remote Firebase Storage URL, download to cache first
+      let localUri = reportUri;
+      if (typeof reportUri === "string" && reportUri.startsWith("http")) {
+        const cacheUri =
+          FileSystem.cacheDirectory + `report_${Date.now()}.jpg`;
+        const { uri } = await FileSystem.downloadAsync(reportUri, cacheUri);
+        localUri = uri;
+      }
+
+      const base64Data = await FileSystem.readAsStringAsync(localUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
@@ -184,9 +198,10 @@ export default function AIDashboard() {
       });
 
       // Auto-update health summary so Emergency, Family, HomeScreen all reflect latest data
-      const highMetrics = (analysis.metrics || []).filter(
-        (m) => m.status === "high" || m.status === "borderline"
-      );
+      const highMetrics = (analysis.metrics || []).filter((m) => {
+        const s = String(m.status || "").toLowerCase();
+        return s === "high" || s === "borderline" || s === "abnormal" || s === "low";
+      });
       const autoConditions = highMetrics.slice(0, 5).map((m, i) => ({
         id: `ai_${i}`,
         title: m.name,
@@ -219,8 +234,9 @@ export default function AIDashboard() {
   // ─── Chart data ─────────────────────────────────────────────────────────────
   const buildChartData = () => {
     const chartable = (analysis?.metrics || [])
-      .filter((m) => typeof m.value === "number")
-      .slice(0, 6); // max 6 bars fits the screen
+      .map((m) => ({ ...m, value: parseFloat(m.value) }))
+      .filter((m) => !isNaN(m.value) && m.value > 0)
+      .slice(0, 6);
 
     if (chartable.length === 0) return null;
 
@@ -516,7 +532,8 @@ export default function AIDashboard() {
               />
               <View style={styles.chartLegend}>
                 {analysis.metrics
-                  .filter((m) => typeof m.value === "number")
+                  .map((m) => ({ ...m, value: parseFloat(m.value) }))
+                  .filter((m) => !isNaN(m.value) && m.value > 0)
                   .slice(0, 6)
                   .map((m, i) => {
                     const cfg = STATUS_CONFIG[m.status] || STATUS_CONFIG.normal;

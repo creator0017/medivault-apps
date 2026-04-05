@@ -153,11 +153,28 @@ export default function UploadReportScreen({ navigation }) {
         setUploadProgress(Math.round(((i + 1) / files.length) * 100));
       }
 
-      Alert.alert(
-        "Uploaded",
-        `${files.length} report${files.length > 1 ? "s" : ""} saved to MediVault securely.`,
-        [{ text: "OK", onPress: () => navigation.navigate("Reports") }]
-      );
+      // Find the first image to offer AI analysis
+      const firstImage = files.find((f) => f.isImage);
+      if (firstImage) {
+        Alert.alert(
+          "Upload Complete",
+          `${files.length} file${files.length > 1 ? "s" : ""} saved. Analyze with AI to extract health data automatically?`,
+          [
+            { text: "View Reports", onPress: () => navigation.navigate("Reports") },
+            {
+              text: "Analyze with AI",
+              onPress: () =>
+                navigation.navigate("AI", { reportUri: firstImage.uri }),
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          "Uploaded",
+          `${files.length} PDF${files.length > 1 ? "s" : ""} saved. Open a report to view it.`,
+          [{ text: "OK", onPress: () => navigation.navigate("Reports") }]
+        );
+      }
     } catch (error) {
       console.error("Upload error:", error);
       Alert.alert("Upload Failed", "Could not upload. Please try again.");
