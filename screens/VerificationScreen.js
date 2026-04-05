@@ -69,14 +69,21 @@ export default function VerificationScreen({ route, navigation }) {
     return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
   };
 
-  // Auto-send both OTPs when screen loads
+  // Auto-send both OTPs in ONE email when screen loads
   useEffect(() => {
     if (!uid || !email || !phone || autoSentRef.current) return;
     autoSentRef.current = true;
 
-    const t1 = setTimeout(() => sendEmailOtp(false), 800);
-    const t2 = setTimeout(() => sendPhoneOtp(false), 1200);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
+    const t = setTimeout(async () => {
+      try {
+        const sendBothOTPs = httpsCallable(functions, "sendBothOTPs");
+        await sendBothOTPs({ phone, uid, email, fullName });
+        setTimeout(() => phoneRefs.current[0]?.focus(), 100);
+      } catch (error) {
+        Alert.alert("Error", error.message || "Failed to send verification codes");
+      }
+    }, 800);
+    return () => clearTimeout(t);
   }, [uid, email, phone]);
 
   const sendPhoneOtp = async (showAlert = true) => {
@@ -193,7 +200,7 @@ export default function VerificationScreen({ route, navigation }) {
 
             <Text style={styles.tagText}>DUAL-CHANNEL VERIFICATION</Text>
             <Text style={styles.title}>Hello, {fullName?.split(" ")[0]}! 👋</Text>
-            <Text style={styles.subtitle}>We've sent secure codes to your phone and email</Text>
+            <Text style={styles.subtitle}>We've sent both verification codes to your email inbox</Text>
 
             {/* Phone Section */}
             <View style={styles.section}>

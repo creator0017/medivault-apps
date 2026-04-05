@@ -3,12 +3,12 @@ import { useRef, useState } from "react";
 import { useUser } from "../context/UserContext";
 import {
   Image,
-  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import PagerView from "react-native-pager-view";
 
 export default function OnboardingScreen({ navigation }) {
@@ -165,7 +165,7 @@ export default function OnboardingScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FFF" },
-  topBar: { alignItems: "flex-end", paddingHorizontal: 20, paddingTop: "5%" },
+  topBar: { alignItems: "flex-end", paddingHorizontal: 20, paddingTop: "9%" },
   skipText: { color: "#2E75B6", fontWeight: "bold", fontSize: 16 },
   pager: { flex: 1 },
   page: {
