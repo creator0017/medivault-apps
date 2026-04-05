@@ -14,11 +14,14 @@ import PagerView from "react-native-pager-view";
 export default function OnboardingScreen({ navigation }) {
   const [activePage, setActivePage] = useState(0);
   const pagerRef = useRef(null);
-  const { userData } = useUser();
+  const { user, userData } = useUser();
 
   const handleSkip = () => {
-    if (userData?.phoneVerified) {
+    if (user && userData?.phoneVerified) {
       navigation.replace("Home");
+    } else if (user && !userData?.phoneVerified) {
+      // Signed in but not verified — go to Login which handles routing
+      navigation.replace("Login");
     } else {
       navigation.replace("Login");
     }

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useUser } from '../context/UserContext';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
@@ -15,6 +16,7 @@ const AnimatedPath = Animated.createAnimatedComponent(Path);
 export default function SplashScreen({ navigation }) {
   const pathProgress = useSharedValue(300);
   const fadeOpacity = useSharedValue(0);
+  const { user, userData } = useUser();
 
   useEffect(() => {
     // 1. Start drawing the heartbeat line (Concept 1)
@@ -26,9 +28,13 @@ export default function SplashScreen({ navigation }) {
     // 2. Fade in the text and branding after 1 second
     fadeOpacity.value = withDelay(1000, withTiming(1, { duration: 1000 }));
 
-    // 3. Move to Onboarding Screen after 4 seconds
+    // 3. Route after 4 seconds — skip Onboarding if already signed in
     const timer = setTimeout(() => {
-      navigation.replace('Onboarding'); 
+      if (user && userData?.phoneVerified) {
+        navigation.replace('Home');
+      } else {
+        navigation.replace('Onboarding');
+      }
     }, 4000);
 
     return () => clearTimeout(timer);
