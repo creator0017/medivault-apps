@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as FileSystem from "expo-file-system";
 import * as Speech from "expo-speech";
 import { useNavigation, useRoute } from "@react-navigation/native";
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { addDoc, collection, doc, getDocs, limit, orderBy, query, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -63,13 +63,15 @@ export default function AIDashboard() {
   const { userData } = useUser();
   const { reportUri } = route.params || {};
 
-  const [step, setStep]           = useState("scanning"); // scanning | done | error
+  const [step, setStep]           = useState(reportUri ? "scanning" : "history");
   const [ocrText, setOcrText]     = useState("");
-  const [analysis, setAnalysis]   = useState(null);       // { date, lab, patient, metrics[], summary }
+  const [analysis, setAnalysis]   = useState(null);
   const [saving, setSaving]       = useState(false);
   const [speaking, setSpeaking]   = useState(false);
   const [showOcr, setShowOcr]     = useState(false);
-  const [activeTab, setActiveTab] = useState("metrics");  // metrics | chart
+  const [activeTab, setActiveTab] = useState("metrics");
+  const [history, setHistory]     = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -77,9 +79,27 @@ export default function AIDashboard() {
   }, []);
 
   useEffect(() => {
-    if (reportUri) analyzeReport();
-    else setStep("done");
+    if (reportUri) {
+      analyzeReport();
+    } else {
+      loadHistory();
+    }
   }, [reportUri]);
+
+  const loadHistory = async () => {
+    if (!userData?.uid) return;
+    setHistoryLoading(true);
+    try {
+      const q = query(
+        collection(db, "users", userData.uid, "aiAnalyses"),
+        orderBy("analyzedAt", "desc"),
+        limit(20)
+      );
+      const snap = await getDocs(q);
+      setHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch {}
+    setHistoryLoading(false);
+  };
 
   // ─── OCR + AI extraction ────────────────────────────────────────────────────
   const analyzeReport = async () => {
@@ -162,6 +182,30 @@ export default function AIDashboard() {
         ocrText: analysis.ocrText,
         analyzedAt: serverTimestamp(),
       });
+
+      // Auto-update health summary so Emergency, Family, HomeScreen all reflect latest data
+      const highMetrics = (analysis.metrics || []).filter(
+        (m) => m.status === "high" || m.status === "borderline"
+      );
+      const autoConditions = highMetrics.slice(0, 5).map((m, i) => ({
+        id: `ai_${i}`,
+        title: m.name,
+        subtitle: `${m.value} ${m.unit || ""} — Ref: ${m.normalRange || "N/A"}`,
+        history: m.status === "high" ? "Abnormal — consult your doctor" : "Borderline — monitor closely",
+        type: "chart-line",
+      }));
+
+      await updateDoc(doc(db, "users", userData.uid), {
+        "healthSummary.lastAnalyzedAt": serverTimestamp(),
+        "healthSummary.metrics": analysis.metrics || [],
+        "healthSummary.summary": analysis.summary || "",
+        "healthSummary.lab": analysis.lab || "",
+        // Only pre-populate emergency conditions if none set yet
+        ...(autoConditions.length > 0 && {
+          "emergency.autoConditions": autoConditions,
+        }),
+      });
+
       Alert.alert("Saved!", "AI analysis saved to your health records.", [
         { text: "OK", onPress: () => navigation.navigate("Home") },
       ]);
@@ -195,6 +239,79 @@ export default function AIDashboard() {
       ],
     };
   };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER — History (no reportUri passed)
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (step === "history") {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()}>
+            <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>AI Analysis History</Text>
+          <TouchableOpacity onPress={() => navigation.navigate("UploadReport")}>
+            <MaterialCommunityIcons name="plus" size={28} color="#8B5CF6" />
+          </TouchableOpacity>
+        </View>
+
+        {historyLoading ? (
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color="#8B5CF6" />
+            <Text style={{ color: "#64748B", marginTop: 12 }}>Loading history...</Text>
+          </View>
+        ) : history.length === 0 ? (
+          <View style={styles.center}>
+            <MaterialCommunityIcons name="robot-outline" size={60} color="#CBD5E1" />
+            <Text style={{ fontSize: 18, fontWeight: "800", color: "#1E293B", marginTop: 16 }}>No analyses yet</Text>
+            <Text style={{ color: "#64748B", textAlign: "center", marginTop: 8 }}>Upload a lab report and run AI analysis to see results here.</Text>
+            <TouchableOpacity style={[styles.retryBtn, { marginTop: 24 }]} onPress={() => navigation.navigate("UploadReport")}>
+              <Text style={styles.retryBtnText}>Upload Report</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <ScrollView contentContainerStyle={{ padding: 16 }}>
+            {history.map((item) => {
+              const abnormal = (item.metrics || []).filter((m) => m.status !== "normal" && m.status !== "Normal");
+              const date = item.analyzedAt?.toDate
+                ? item.analyzedAt.toDate().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                : item.date || "—";
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.historyCard}
+                  onPress={() => {
+                    setAnalysis(item);
+                    setOcrText(item.ocrText || "");
+                    setStep("done");
+                  }}
+                >
+                  <View style={styles.historyCardTop}>
+                    <View style={styles.historyLabBadge}>
+                      <MaterialCommunityIcons name="hospital-building" size={14} color="#8B5CF6" />
+                      <Text style={styles.historyLabText}>{item.lab || "Lab Report"}</Text>
+                    </View>
+                    <Text style={styles.historyDate}>{date}</Text>
+                  </View>
+                  <Text style={styles.historySummary} numberOfLines={2}>{item.summary || "No summary"}</Text>
+                  <View style={styles.historyMeta}>
+                    <Text style={styles.historyMetrics}>{item.metrics?.length || 0} metrics</Text>
+                    {abnormal.length > 0 && (
+                      <View style={styles.historyWarnBadge}>
+                        <Text style={styles.historyWarnText}>{abnormal.length} need attention</Text>
+                      </View>
+                    )}
+                    <MaterialCommunityIcons name="chevron-right" size={18} color="#CBD5E1" />
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        )}
+      </View>
+    );
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER — Scanning state
@@ -743,4 +860,25 @@ const styles = StyleSheet.create({
   saveBtnText: { color: "#FFF", fontWeight: "900", letterSpacing: 0.5 },
   uploadAnotherBtn: { alignItems: "center", marginTop: 16, marginBottom: 8 },
   uploadAnotherText: { color: "#8B5CF6", fontWeight: "700", fontSize: 14 },
+
+  // History styles
+  historyCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 12,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+  },
+  historyCardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  historyLabBadge: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#F5F3FF", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  historyLabText: { color: "#8B5CF6", fontSize: 12, fontWeight: "700" },
+  historyDate: { fontSize: 11, color: "#94A3B8", fontWeight: "600" },
+  historySummary: { fontSize: 13, color: "#475569", lineHeight: 20, marginBottom: 10 },
+  historyMeta: { flexDirection: "row", alignItems: "center", gap: 10 },
+  historyMetrics: { fontSize: 11, color: "#64748B", fontWeight: "600" },
+  historyWarnBadge: { backgroundColor: "#FEE2E2", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  historyWarnText: { color: "#EF4444", fontSize: 11, fontWeight: "700" },
 });

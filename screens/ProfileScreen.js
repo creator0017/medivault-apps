@@ -8,10 +8,12 @@ import {
   SafeAreaView,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { useTheme } from "../context/ThemeContext";
 import BottomTabBar from "../components/BottomTabBar";
 import EditModal from "../components/EditModal";
 import { useUser } from "../context/UserContext";
@@ -19,6 +21,7 @@ import { db } from "../firebaseConfig";
 
 export default function ProfileScreen({ navigation }) {
   const { userData, signOut } = useUser();
+  const { isDark, toggleDark, theme, fontScale, changeFontScale, fm } = useTheme();
 
   // H-1 Fix: Use real data from Firestore via UserContext
   const [profile, setProfile] = useState({
@@ -144,7 +147,7 @@ export default function ProfileScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       <View style={styles.headerSpacer} />
       <View style={styles.header}>
         <TouchableOpacity
@@ -195,7 +198,7 @@ export default function ProfileScreen({ navigation }) {
 
         {/* ACCOUNT SECURITY */}
         <Text style={styles.sectionLabel}>ACCOUNT SECURITY</Text>
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: theme.card }]}>
           <SettingRow
             icon="phone"
             title="Phone Number"
@@ -218,7 +221,7 @@ export default function ProfileScreen({ navigation }) {
 
         {/* CLINICAL PROFILE */}
         <Text style={styles.sectionLabel}>CLINICAL PROFILE</Text>
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: theme.card }]}>
           <SettingRow
             icon="heart-pulse"
             title="Primary Condition"
@@ -247,39 +250,69 @@ export default function ProfileScreen({ navigation }) {
           />
         </View>
 
-        {/* APP PREFERENCES — M-2/M-3 Fix: Mark as coming soon */}
+        {/* APP PREFERENCES */}
         <Text style={styles.sectionLabel}>APP PREFERENCES</Text>
-        <View style={styles.card}>
-          <SettingRow
-            icon="theme-light-dark"
-            title="Dark Mode"
-            value="Coming Soon"
-            color="#64748B"
-            onPress={() =>
-              Alert.alert(
-                "Coming Soon",
-                "Dark mode will be available in a future update.",
-              )
-            }
-          />
-          <SettingRow
-            icon="translate"
-            title="Language"
-            value="English"
-            color="#64748B"
-            onPress={() =>
-              Alert.alert(
-                "Coming Soon",
-                "Multi-language support will be available in a future update.",
-              )
-            }
-            isLast
-          />
+        <View style={[styles.card, { backgroundColor: theme.card }]}>
+          {/* Dark Mode toggle */}
+          <View style={styles.row}>
+            <View style={[styles.iconBg, { backgroundColor: "#64748B15" }]}>
+              <MaterialCommunityIcons name="theme-light-dark" size={22} color="#64748B" />
+            </View>
+            <View style={styles.rowTextContainer}>
+              <Text style={[styles.rowTitle, { color: theme.text }]}>Dark Mode</Text>
+              <Text style={[styles.rowValue, { color: theme.muted }]}>{isDark ? "On" : "Off"}</Text>
+            </View>
+            <Switch
+              value={isDark}
+              onValueChange={toggleDark}
+              trackColor={{ false: "#CBD5E1", true: "#2E75B6" }}
+              thumbColor={isDark ? "#FFF" : "#F1F5F9"}
+            />
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Font Size */}
+          <View style={styles.row}>
+            <View style={[styles.iconBg, { backgroundColor: "#64748B15" }]}>
+              <MaterialCommunityIcons name="format-size" size={22} color="#64748B" />
+            </View>
+            <View style={styles.rowTextContainer}>
+              <Text style={[styles.rowTitle, { color: theme.text }]}>Font Size</Text>
+              <View style={styles.fontBtnRow}>
+                {["small", "normal", "large"].map((s) => (
+                  <TouchableOpacity
+                    key={s}
+                    style={[styles.fontBtn, fontScale === s && styles.fontBtnActive]}
+                    onPress={() => changeFontScale(s)}
+                  >
+                    <Text style={[styles.fontBtnText, fontScale === s && styles.fontBtnTextActive]}>
+                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Language */}
+          <View style={[styles.row]}>
+            <View style={[styles.iconBg, { backgroundColor: "#64748B15" }]}>
+              <MaterialCommunityIcons name="translate" size={22} color="#64748B" />
+            </View>
+            <View style={styles.rowTextContainer}>
+              <Text style={[styles.rowTitle, { color: theme.text }]}>Language</Text>
+              <Text style={[styles.rowValue, { color: theme.muted }]}>English</Text>
+            </View>
+            <MaterialCommunityIcons name="check-circle" size={20} color="#10B981" />
+          </View>
         </View>
 
         {/* FAMILY ACCESS */}
         <Text style={styles.sectionLabel}>FAMILY ACCESS</Text>
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: theme.card }]}>
           <SettingRow
             icon="account-group"
             title="Manage Family Members"
@@ -291,7 +324,7 @@ export default function ProfileScreen({ navigation }) {
 
         {/* DATA & STORAGE */}
         <Text style={styles.sectionLabel}>DATA & STORAGE</Text>
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: theme.card }]}>
           <SettingRow
             icon="cloud-download"
             title="Export Health Data"
@@ -415,4 +448,17 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
   rowValue: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
   divider: { height: 1, backgroundColor: "#F8FAFC", marginLeft: 70 },
+  fontBtnRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  fontBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#F8FAFC",
+  },
+  fontBtnActive: { backgroundColor: "#2E75B6", borderColor: "#2E75B6" },
+  fontBtnText: { fontSize: 12, fontWeight: "700", color: "#64748B" },
+  fontBtnTextActive: { color: "#FFF" },
+  muted: { color: "#94A3B8" },
 });

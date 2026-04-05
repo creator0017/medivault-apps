@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
 import { collection, onSnapshot, orderBy, query, limit, getCountFromServer } from "firebase/firestore";
 import { useCallback, useEffect, useState } from "react";
+import { useTheme } from "../context/ThemeContext";
 import {
   Alert,
   Dimensions,
@@ -21,7 +22,7 @@ import { db } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
-const getGreeting = () => {
+const computeGreeting = () => {
   const hour = new Date().getHours();
   if (hour < 12) return "Good Morning";
   if (hour < 17) return "Good Afternoon";
@@ -30,10 +31,19 @@ const getGreeting = () => {
 
 export default function HomeScreen({ route, navigation }) {
   const { userData } = useUser();
+  const { theme, fm } = useTheme();
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [greeting, setGreeting] = useState(computeGreeting());
+
+  // Update greeting every minute so it matches current time
+  useEffect(() => {
+    setGreeting(computeGreeting());
+    const id = setInterval(() => setGreeting(computeGreeting()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const firstName =
     userData?.fullName?.split(" ")[0] ||
@@ -183,7 +193,7 @@ export default function HomeScreen({ route, navigation }) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       <SideMenu
         visible={isMenuVisible}
         onClose={() => setIsMenuVisible(false)}
@@ -193,11 +203,10 @@ export default function HomeScreen({ route, navigation }) {
       <View style={styles.headerSpacer} />
 
       {/* --- TOP BAR --- */}
-      <View style={styles.topNav}>
+      <View style={[styles.topNav, { backgroundColor: theme.navBg, borderBottomColor: theme.border }]}>
         <TouchableOpacity onPress={() => setIsMenuVisible(true)}>
-          <MaterialCommunityIcons name="menu" size={30} color="#1E293B" />
+          <MaterialCommunityIcons name="menu" size={30} color={theme.text} />
         </TouchableOpacity>
-        <Text style={styles.topNavTitle}>MediVault</Text>
         <View style={styles.navRight}>
           <TouchableOpacity
             style={styles.notifBtn}
@@ -222,8 +231,8 @@ export default function HomeScreen({ route, navigation }) {
         }
       >
         {/* --- GREETING --- */}
-        <Text style={styles.greeting}>
-          {getGreeting()}, {firstName}! 👋
+        <Text style={[styles.greeting, { color: theme.text, fontSize: 26 * fm }]}>
+          {greeting}, {firstName}! 👋
         </Text>
 
         {/* --- EMERGENCY BANNER --- */}
@@ -267,8 +276,8 @@ export default function HomeScreen({ route, navigation }) {
 
         {/* --- QUICK STATS GRID --- */}
         <View style={styles.quickStatsRow}>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("AI")}>
-            <Text style={styles.qsTitle}>Last HbA1c</Text>
+          <TouchableOpacity style={[styles.quickStatBox, { backgroundColor: theme.card }]} onPress={() => navigation.navigate("AI")}>
+            <Text style={[styles.qsTitle, { color: theme.subText }]}>Last HbA1c</Text>
             <Text style={styles.qsValue}>{hba1cMetric ? `${hba1cMetric.value}${hba1cMetric.unit || "%"}` : "--"}</Text>
             {hba1cMetric && (
               <Text style={[styles.qsStatus, { color: hba1cMetric.status === "Normal" ? "#10B981" : "#EF4444" }]}>
@@ -277,8 +286,8 @@ export default function HomeScreen({ route, navigation }) {
             )}
             {!hba1cMetric && <Text style={styles.qsStatus}>No data yet</Text>}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("AI")}>
-            <Text style={styles.qsTitle}>Last BP</Text>
+          <TouchableOpacity style={[styles.quickStatBox, { backgroundColor: theme.card }]} onPress={() => navigation.navigate("AI")}>
+            <Text style={[styles.qsTitle, { color: theme.subText }]}>Last BP</Text>
             <Text style={styles.qsValue}>{bpMetric ? `${bpMetric.value}${bpMetric.unit || ""}` : "--"}</Text>
             {bpMetric && (
               <Text style={[styles.qsStatus, { color: bpMetric.status === "Normal" ? "#10B981" : "#EF4444" }]}>
@@ -289,14 +298,14 @@ export default function HomeScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
         <View style={styles.quickStatsRow}>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Profile")}>
-            <Text style={styles.qsTitle}>Medications</Text>
+          <TouchableOpacity style={[styles.quickStatBox, { backgroundColor: theme.card }]} onPress={() => navigation.navigate("Profile")}>
+            <Text style={[styles.qsTitle, { color: theme.subText }]}>Medications</Text>
             <Text style={styles.qsValueBlue}>
               {medicationCount != null ? `${medicationCount} Active` : "Not set"}
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Reports")}>
-            <Text style={styles.qsTitle}>Reports</Text>
+          <TouchableOpacity style={[styles.quickStatBox, { backgroundColor: theme.card }]} onPress={() => navigation.navigate("Reports")}>
+            <Text style={[styles.qsTitle, { color: theme.subText }]}>Reports</Text>
             <Text style={styles.qsValueBlue}>
               {totalReports != null ? `${totalReports} Total` : `${recentReports.length}+`}
             </Text>
@@ -304,7 +313,7 @@ export default function HomeScreen({ route, navigation }) {
         </View>
 
         {/* --- AI INSIGHTS CARD --- */}
-        <TouchableOpacity style={styles.aiCard} onPress={() => navigation.navigate("AI")}>
+        <TouchableOpacity style={[styles.aiCard, { backgroundColor: theme.card }]} onPress={() => navigation.navigate("AI")}>
           <View style={styles.aiHeader}>
             <MaterialCommunityIcons name="robot-outline" size={24} color="#8B5CF6" />
             <Text style={styles.aiTitle}>AI Health Insights</Text>
@@ -318,7 +327,7 @@ export default function HomeScreen({ route, navigation }) {
 
         {/* --- RECENT REPORTS --- */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>RECENT REPORTS</Text>
+          <Text style={[styles.sectionTitle, { color: theme.subText }]}>RECENT REPORTS</Text>
           <TouchableOpacity onPress={() => navigation.navigate("Reports")}>
             <Text style={styles.viewAllText}>View All</Text>
           </TouchableOpacity>
@@ -331,7 +340,7 @@ export default function HomeScreen({ route, navigation }) {
           {recentReports.map((report) => (
             <TouchableOpacity
               key={report.id}
-              style={styles.reportCard}
+              style={[styles.reportCard, { backgroundColor: theme.card }]}
               onPress={() => navigation.navigate("Reports")}
             >
               <View
@@ -376,10 +385,10 @@ export default function HomeScreen({ route, navigation }) {
         </View>
 
         {/* --- QUICK ACTIONS GRID --- */}
-        <Text style={styles.sectionTitleAlt}>QUICK ACTIONS</Text>
+        <Text style={[styles.sectionTitleAlt, { color: theme.subText }]}>QUICK ACTIONS</Text>
         <View style={styles.grid}>
           <TouchableOpacity
-            style={styles.actionBtn}
+            style={[styles.actionBtn, { backgroundColor: theme.card }]}
             onPress={() => navigation.navigate("UploadReport")}
           >
             <MaterialCommunityIcons
@@ -391,7 +400,7 @@ export default function HomeScreen({ route, navigation }) {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.actionBtn}
+            style={[styles.actionBtn, { backgroundColor: theme.card }]}
             onPress={() => navigation.navigate("Family")}
           >
             <MaterialCommunityIcons
@@ -401,9 +410,9 @@ export default function HomeScreen({ route, navigation }) {
             />
             <Text style={styles.actionText}>Family Health</Text>
           </TouchableOpacity>
-          
+
           <TouchableOpacity
-            style={[styles.actionBtn, isRecording && styles.recordingActive]}
+            style={[styles.actionBtn, { backgroundColor: theme.card }, isRecording && styles.recordingActive]}
             onPress={isRecording ? stopRecording : startRecording}
           >
             <MaterialCommunityIcons
@@ -419,7 +428,7 @@ export default function HomeScreen({ route, navigation }) {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.actionBtn}
+            style={[styles.actionBtn, { backgroundColor: theme.card }]}
             onPress={() => navigation.navigate("Profile")}
           >
             <MaterialCommunityIcons

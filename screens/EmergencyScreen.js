@@ -47,6 +47,9 @@ export default function EmergencyScreen({ navigation }) {
       if (!snap.exists()) return;
       const d = snap.data();
       const em = d.emergency || {};
+      const clinical = d.clinical || {};
+      const hs = d.healthSummary || {};
+
       setMedicalInfo({
         name: d.fullName || "User",
         bloodGroup: em.bloodGroup || "O+",
@@ -55,9 +58,42 @@ export default function EmergencyScreen({ navigation }) {
         patientId: d.patientId || "MV-000000",
         emergencyPin: em.emergencyPin || "1234",
       });
-      setConditions(em.conditions || []);
-      setAllergies(em.allergies || []);
-      setMedications(em.medications || []);
+
+      // Conditions: use manual ones first, fall back to AI-extracted
+      const manualConditions = em.conditions || [];
+      const autoConditions = em.autoConditions || [];
+      setConditions(manualConditions.length > 0 ? manualConditions : autoConditions);
+
+      // Allergies: use emergency field or clinical.allergies as plain text
+      if (em.allergies?.length > 0) {
+        setAllergies(em.allergies);
+      } else if (clinical.allergies) {
+        setAllergies(
+          clinical.allergies.split(",").map((a, i) => ({
+            id: `c_${i}`,
+            name: a.trim(),
+            severity: "Check with doctor",
+          })).filter((a) => a.name)
+        );
+      } else {
+        setAllergies([]);
+      }
+
+      // Medications: use emergency field or clinical.meds as plain text
+      if (em.medications?.length > 0) {
+        setMedications(em.medications);
+      } else if (clinical.meds) {
+        setMedications(
+          clinical.meds.split(",").map((m, i) => ({
+            id: `cm_${i}`,
+            name: m.trim(),
+            dose: "As prescribed",
+          })).filter((m) => m.name)
+        );
+      } else {
+        setMedications([]);
+      }
+
       setContacts(em.contacts || []);
     });
     return unsub;

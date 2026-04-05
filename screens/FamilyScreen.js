@@ -1,16 +1,19 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   addDoc,
+  arrayUnion,
   collection,
   doc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -171,6 +174,10 @@ export default function FamilyScreen({ navigation }) {
   const handleAcceptInvite = async (inv) => {
     try {
       await updateDoc(doc(db, "familyRequests", inv.id), { status: "approved" });
+      // Grant fromUid read access to this user's health data
+      await updateDoc(doc(db, "users", userData.uid), {
+        authorizedViewers: arrayUnion(inv.fromUid),
+      });
     } catch (e) {
       Alert.alert("Error", e.message);
     }
@@ -334,67 +341,87 @@ export default function FamilyScreen({ navigation }) {
     </View>
   );
 
-  const renderProfile = () => (
-    <ScrollView style={styles.fullView}>
-      <View style={styles.profileHeader}>
-        <View style={styles.bigAvatar}>
-          <MaterialCommunityIcons name="account" size={50} color="#2E75B6" />
-        </View>
-        <Text style={styles.profileName}>{selectedMember.name}</Text>
-        <Text style={styles.profileId}>{selectedMember.patientId}</Text>
-      </View>
+  const MemberProfile = ({ member }) => {
+    const [memberAnalyses, setMemberAnalyses] = useState([]);
+    const [loadingMember, setLoadingMember] = useState(true);
 
-      {!selectedMember.isAuthorized ? (
-        <View style={styles.lockBox}>
-          <MaterialCommunityIcons
-            name="lock-outline"
-            size={60}
-            color="#CBD5E1"
-          />
-          <Text style={styles.lockTitle}>Access Restricted</Text>
-          <Text style={styles.lockSub}>
-            Data is encrypted until they approve your request.
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.statsContainer}>
-          <View style={styles.statCard}>
-            <Text style={styles.statLabel}>LATEST HBA1C</Text>
-            <Text
-              style={[
-                styles.statValue,
-                {
-                  color:
-                    selectedMember.status === "Warning" ? "#EF4444" : "#10B981",
-                },
-              ]}
-            >
-              {selectedMember.hba1c}
-            </Text>
+    useEffect(() => {
+      if (!member.isAuthorized || member._direction !== "sent") {
+        setLoadingMember(false);
+        return;
+      }
+      const targetUid = member.toUid;
+      if (!targetUid) { setLoadingMember(false); return; }
+      const q = query(
+        collection(db, "users", targetUid, "aiAnalyses"),
+        orderBy("analyzedAt", "desc"),
+        limit(5)
+      );
+      getDocs(q)
+        .then((snap) => setMemberAnalyses(snap.docs.map((d) => ({ id: d.id, ...d.data() }))))
+        .catch(() => {})
+        .finally(() => setLoadingMember(false));
+    }, [member]);
+
+    const latestHba1c = memberAnalyses
+      .flatMap((a) => a.metrics || [])
+      .find((m) => m.name?.toLowerCase().includes("hba1c") || m.name?.toLowerCase().includes("a1c"));
+
+    const latestSummary = memberAnalyses[0]?.summary;
+    const abnormalCount = memberAnalyses[0]
+      ? (memberAnalyses[0].metrics || []).filter((m) => m.status !== "normal" && m.status !== "Normal").length
+      : 0;
+
+    return (
+      <ScrollView style={styles.fullView}>
+        <View style={styles.profileHeader}>
+          <View style={styles.bigAvatar}>
+            <MaterialCommunityIcons name="account" size={50} color="#2E75B6" />
           </View>
-          <View style={styles.graphBox}>
-            <Svg height="120" width="100%" viewBox="0 0 300 100">
-              <Line
-                x1="0"
-                y1="50"
-                x2="300"
-                y2="50"
-                stroke="#E2E8F0"
-                strokeDasharray="5"
-              />
-              <Path
-                d="M0,80 Q50,75 100,60 T200,45 T300,25"
-                fill="none"
-                stroke="#3B82F6"
-                strokeWidth="4"
-              />
-              <Circle cx="300" cy="25" r="5" fill="#EF4444" />
-            </Svg>
-          </View>
+          <Text style={styles.profileName}>{member.name}</Text>
+          <Text style={styles.profileId}>{member.patientId || member.toPatientId || "--"}</Text>
         </View>
-      )}
-    </ScrollView>
-  );
+
+        {!member.isAuthorized ? (
+          <View style={styles.lockBox}>
+            <MaterialCommunityIcons name="lock-outline" size={60} color="#CBD5E1" />
+            <Text style={styles.lockTitle}>Access Restricted</Text>
+            <Text style={styles.lockSub}>Data is encrypted until they approve your request.</Text>
+          </View>
+        ) : loadingMember ? (
+          <View style={{ alignItems: "center", marginTop: 40 }}>
+            <ActivityIndicator size="large" color="#2E75B6" />
+          </View>
+        ) : (
+          <View style={styles.statsContainer}>
+            <View style={styles.statCard}>
+              <Text style={styles.statLabel}>LATEST HBA1C</Text>
+              <Text style={[styles.statValue, { color: latestHba1c ? (latestHba1c.status === "normal" ? "#10B981" : "#EF4444") : "#94A3B8" }]}>
+                {latestHba1c ? `${latestHba1c.value}${latestHba1c.unit || "%"}` : "No data"}
+              </Text>
+              {abnormalCount > 0 && (
+                <Text style={{ color: "#EF4444", fontWeight: "700", fontSize: 12, marginTop: 4 }}>
+                  ⚠️ {abnormalCount} metric{abnormalCount > 1 ? "s" : ""} need attention
+                </Text>
+              )}
+            </View>
+            {latestSummary ? (
+              <View style={[styles.graphBox, { backgroundColor: "#F5F3FF" }]}>
+                <Text style={{ fontSize: 11, fontWeight: "700", color: "#8B5CF6", marginBottom: 6 }}>LATEST AI SUMMARY</Text>
+                <Text style={{ color: "#4C1D95", fontSize: 13, lineHeight: 20 }}>{latestSummary}</Text>
+              </View>
+            ) : (
+              <View style={styles.graphBox}>
+                <Text style={{ color: "#94A3B8", textAlign: "center", fontSize: 13 }}>No AI analyses found for this member yet.</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </ScrollView>
+    );
+  };
+
+  const renderProfile = () => <MemberProfile member={selectedMember} />;
 
   return (
     <SafeAreaView style={styles.container}>

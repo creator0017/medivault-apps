@@ -7,6 +7,7 @@ import "react-native-gesture-handler";
 import { ActivityIndicator, View } from "react-native";
 
 import { UserProvider, useUser } from "./context/UserContext";
+import { ThemeProvider } from "./context/ThemeContext";
 
 // --- IMPORT ALL SCREENS ---
 import AIDashboard from "./screens/AIDashboard";
@@ -80,8 +81,10 @@ function AppNavigator() {
 
 export default function App() {
   return (
-    <UserProvider>
-      <AppNavigator />
-    </UserProvider>
+    <ThemeProvider>
+      <UserProvider>
+        <AppNavigator />
+      </UserProvider>
+    </ThemeProvider>
   );
 }
