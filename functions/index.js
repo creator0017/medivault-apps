@@ -20,6 +20,45 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+exports.sendPhoneOTP = functions
+  .region("us-central1")
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Login required");
+    }
+
+    const { phone, uid } = data;
+    if (!phone) {
+      throw new functions.https.HttpsError("invalid-argument", "Phone required");
+    }
+
+    try {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      await admin.firestore().collection("users").doc(uid).set(
+        {
+          phoneOtp: otp,
+          phoneOtpExpires: admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000),
+        },
+        { merge: true }
+      );
+
+      // Send SMS via Gmail as fallback (shows OTP in email for demo)
+      // In production, replace with Twilio/MSG91
+      await transporter.sendMail({
+        from: `"MediVault" <${gmailUser}>`,
+        to: gmailUser, // Send to admin for demo — replace with SMS gateway
+        subject: `MediVault Phone OTP for ${phone}`,
+        html: `<h2>Phone OTP Request</h2><p>Phone: ${phone}</p><p>OTP: <strong>${otp}</strong></p>`,
+      });
+
+      return { success: true };
+    } catch (error) {
+      console.error("sendPhoneOTP error:", error);
+      throw new functions.https.HttpsError("internal", error.message);
+    }
+  });
+
 exports.sendEmailOTP = functions
   .region("us-central1")
   .https.onCall(async (data, context) => {
