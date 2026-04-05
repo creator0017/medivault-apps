@@ -84,7 +84,7 @@ export default function VerificationScreen({ route, navigation }) {
     try {
       setSendingPhone(true);
       const sendPhoneOTP = httpsCallable(functions, "sendPhoneOTP");
-      await sendPhoneOTP({ phone, uid });
+      await sendPhoneOTP({ phone, uid, email, fullName });
       setPhoneTimer(45);
       setPhoneOtp(["", "", "", "", "", ""]);
       setTimeout(() => phoneRefs.current[0]?.focus(), 100);

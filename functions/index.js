@@ -27,9 +27,9 @@ exports.sendPhoneOTP = functions
       throw new functions.https.HttpsError("unauthenticated", "Login required");
     }
 
-    const { phone, uid } = data;
-    if (!phone) {
-      throw new functions.https.HttpsError("invalid-argument", "Phone required");
+    const { phone, uid, email, fullName } = data;
+    if (!phone || !email) {
+      throw new functions.https.HttpsError("invalid-argument", "Phone and email required");
     }
 
     try {
@@ -43,13 +43,18 @@ exports.sendPhoneOTP = functions
         { merge: true }
       );
 
-      // Send SMS via Gmail as fallback (shows OTP in email for demo)
-      // In production, replace with Twilio/MSG91
       await transporter.sendMail({
         from: `"MediVault" <${gmailUser}>`,
-        to: gmailUser, // Send to admin for demo — replace with SMS gateway
-        subject: `MediVault Phone OTP for ${phone}`,
-        html: `<h2>Phone OTP Request</h2><p>Phone: ${phone}</p><p>OTP: <strong>${otp}</strong></p>`,
+        to: email,
+        subject: "Your MediVault Phone Verification Code",
+        html: `
+          <h2 style="color:#2E75B6">MediVault</h2>
+          <p>Hello ${fullName || ""},</p>
+          <p>Your <strong>Phone Verification Code</strong> is:</p>
+          <h1 style="letter-spacing:8px;color:#1E293B">${otp}</h1>
+          <p>Enter this code in the <strong>Phone Verification</strong> box.</p>
+          <p style="color:#94A3B8">Valid for 10 minutes.</p>
+        `,
       });
 
       return { success: true };
