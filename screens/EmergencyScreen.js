@@ -50,44 +50,49 @@ export default function EmergencyScreen({ navigation }) {
       const clinical = d.clinical || {};
       const hs = d.healthSummary || {};
 
+      // Age: manual > AI-extracted from report > blank
+      const resolvedAge = em.age || em.autoAge || "";
+      // Blood group: manual > AI-extracted > default
+      const resolvedBloodGroup = em.bloodGroup || em.autoBloodGroup || "—";
+
       setMedicalInfo({
         name: d.fullName || "User",
-        bloodGroup: em.bloodGroup || "O+",
-        age: em.age || "",
+        bloodGroup: resolvedBloodGroup,
+        age: resolvedAge,
         weight: em.weight || "",
         patientId: d.patientId || "MV-000000",
         emergencyPin: em.emergencyPin || "1234",
       });
 
-      // Conditions: use manual ones first, fall back to AI-extracted
+      // Conditions: manual > AI-extracted from report > empty
       const manualConditions = em.conditions || [];
       const autoConditions = em.autoConditions || [];
       setConditions(manualConditions.length > 0 ? manualConditions : autoConditions);
 
-      // Allergies: use emergency field or clinical.allergies as plain text
+      // Allergies: manual > AI-extracted > clinical text > empty
       if (em.allergies?.length > 0) {
         setAllergies(em.allergies);
+      } else if (em.autoAllergies?.length > 0) {
+        setAllergies(em.autoAllergies);
       } else if (clinical.allergies) {
         setAllergies(
           clinical.allergies.split(",").map((a, i) => ({
-            id: `c_${i}`,
-            name: a.trim(),
-            severity: "Check with doctor",
+            id: `c_${i}`, name: a.trim(), severity: "Check with doctor",
           })).filter((a) => a.name)
         );
       } else {
         setAllergies([]);
       }
 
-      // Medications: use emergency field or clinical.meds as plain text
+      // Medications: manual > AI-extracted > clinical text > empty
       if (em.medications?.length > 0) {
         setMedications(em.medications);
+      } else if (em.autoMedications?.length > 0) {
+        setMedications(em.autoMedications);
       } else if (clinical.meds) {
         setMedications(
           clinical.meds.split(",").map((m, i) => ({
-            id: `cm_${i}`,
-            name: m.trim(),
-            dose: "As prescribed",
+            id: `cm_${i}`, name: m.trim(), dose: "As prescribed",
           })).filter((m) => m.name)
         );
       } else {
@@ -209,6 +214,17 @@ export default function EmergencyScreen({ navigation }) {
         contentContainerStyle={styles.scrollBody}
         showsVerticalScrollIndicator={false}
       >
+        {/* --- AI AUTO-FILL BANNER --- */}
+        {(conditions.some((c) => c.id?.startsWith("ai_")) ||
+          medicalInfo.age) && (
+          <View style={styles.aiBanner}>
+            <MaterialCommunityIcons name="robot-outline" size={16} color="#8B5CF6" />
+            <Text style={styles.aiBannerText}>
+              Data auto-filled from your uploaded reports. Tap ⚙️ to edit manually.
+            </Text>
+          </View>
+        )}
+
         {/* --- CRITICAL INFO CARD --- */}
         <View style={styles.criticalCard}>
           <View style={styles.cardTop}>
@@ -440,6 +456,18 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   scrollBody: { padding: 20, paddingBottom: 50 },
+  aiBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+    borderLeftWidth: 3,
+    borderLeftColor: "#8B5CF6",
+  },
+  aiBannerText: { flex: 1, fontSize: 12, color: "#6D28D9", fontWeight: "600" },
   criticalCard: {
     backgroundColor: "#C54242",
     borderRadius: 30,

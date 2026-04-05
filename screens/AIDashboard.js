@@ -24,18 +24,24 @@ const genAI = new GoogleGenerativeAI(API_KEY);
 const screenWidth = Dimensions.get("window").width;
 
 // ─── Gemini prompt — extracts full blood panel as structured JSON ─────────────
-const EXTRACTION_PROMPT = `You are an expert medical OCR system. Analyze this Indian lab report image.
+const EXTRACTION_PROMPT = `You are an expert medical OCR system. Analyze this Indian lab report image carefully.
 
-Step 1 — OCR: Read ALL text visible in the image.
-Step 2 — Extract: Find every blood test metric (HbA1c, Fasting Sugar, Post Prandial Sugar, Total Cholesterol, LDL, HDL, Triglycerides, Haemoglobin, Creatinine, TSH, Vitamin D, Vitamin B12, etc.)
-Step 3 — Classify each metric status as: "normal", "borderline", or "high"
-Step 4 — Write a plain-English voice summary (2-3 sentences, suitable for an elderly person)
+Step 1 — OCR: Read ALL text visible in the image including patient header info.
+Step 2 — Extract patient details: name, age, gender, blood group (if shown).
+Step 3 — Extract every blood test metric (HbA1c, Fasting Sugar, Post Prandial Sugar, Total Cholesterol, LDL, HDL, Triglycerides, Haemoglobin, Creatinine, TSH, Vitamin D, Vitamin B12, WBC, RBC, Platelets, etc.)
+Step 4 — Classify each metric status as exactly: "normal", "borderline", or "high"
+Step 5 — From abnormal metrics, derive likely medical conditions (e.g. high HbA1c → Diabetes, low Haemoglobin → Anaemia, high Cholesterol → Dyslipidaemia).
+Step 6 — Extract any medications or allergies mentioned in the report.
+Step 7 — Write a plain-English voice summary (2-3 sentences, suitable for an elderly person).
 
 Return ONLY valid JSON in this exact format (no markdown, no code blocks):
 {
   "date": "DD/MM/YYYY",
   "lab": "Lab name from report",
-  "patient": "Patient name if visible",
+  "patient": "Patient full name if visible",
+  "age": "52",
+  "gender": "Female",
+  "bloodGroup": "O+",
   "metrics": [
     {
       "name": "HbA1c",
@@ -45,8 +51,13 @@ Return ONLY valid JSON in this exact format (no markdown, no code blocks):
       "status": "high"
     }
   ],
-  "ocrText": "First 300 characters of raw text from the report",
-  "summary": "Your blood test results are back. Your HbA1c is 7.2 percent which is slightly high, meaning your average blood sugar over 3 months is elevated. I recommend speaking with your doctor about dietary changes."
+  "conditions": [
+    { "title": "Diabetes Mellitus", "subtitle": "HbA1c elevated at 7.2%", "history": "Detected from latest lab report" }
+  ],
+  "medications": [],
+  "allergies": [],
+  "ocrText": "First 300 characters of raw OCR text from report",
+  "summary": "Your blood test results show your HbA1c is 7.2 percent which is high, suggesting elevated blood sugar over the past 3 months. I recommend consulting your doctor about diabetes management."
 }`;
 
 // ─── Status config ────────────────────────────────────────────────────────────
@@ -197,28 +208,68 @@ export default function AIDashboard() {
         analyzedAt: serverTimestamp(),
       });
 
-      // Auto-update health summary so Emergency, Family, HomeScreen all reflect latest data
-      const highMetrics = (analysis.metrics || []).filter((m) => {
-        const s = String(m.status || "").toLowerCase();
-        return s === "high" || s === "borderline" || s === "abnormal" || s === "low";
-      });
-      const autoConditions = highMetrics.slice(0, 5).map((m, i) => ({
-        id: `ai_${i}`,
-        title: m.name,
-        subtitle: `${m.value} ${m.unit || ""} — Ref: ${m.normalRange || "N/A"}`,
-        history: m.status === "high" ? "Abnormal — consult your doctor" : "Borderline — monitor closely",
+      // ── Build conditions from AI-extracted conditions + high metrics fallback ──
+      const aiConditions = (analysis.conditions || []).map((c, i) => ({
+        id: `ai_cond_${i}`,
+        title: c.title || c.name || "Condition",
+        subtitle: c.subtitle || c.description || "",
+        history: c.history || "Detected from uploaded lab report",
         type: "chart-line",
       }));
+
+      if (aiConditions.length === 0) {
+        // fallback: derive from high metrics
+        const highMetrics = (analysis.metrics || []).filter((m) => {
+          const s = String(m.status || "").toLowerCase();
+          return s === "high" || s === "borderline" || s === "abnormal";
+        });
+        highMetrics.slice(0, 5).forEach((m, i) => {
+          aiConditions.push({
+            id: `ai_metric_${i}`,
+            title: m.name,
+            subtitle: `${m.value} ${m.unit || ""} — Ref: ${m.normalRange || "N/A"}`,
+            history: String(m.status).toLowerCase() === "high" ? "Abnormal — consult your doctor" : "Borderline — monitor closely",
+            type: "chart-line",
+          });
+        });
+      }
+
+      // ── Build medications from AI extraction ──
+      const aiMedications = (analysis.medications || []).map((med, i) => ({
+        id: `ai_med_${i}`,
+        name: typeof med === "string" ? med : med.name || med,
+        dose: med.dose || med.dosage || "As prescribed",
+      }));
+
+      // ── Build allergies from AI extraction ──
+      const aiAllergies = (analysis.allergies || []).map((a, i) => ({
+        id: `ai_allergy_${i}`,
+        name: typeof a === "string" ? a : a.name || a,
+        severity: a.severity || "Check with doctor",
+      }));
+
+      // ── Build update payload — only overwrite fields that are currently empty ──
+      const emergencyUpdate = {};
+      if (aiConditions.length > 0) {
+        emergencyUpdate["emergency.autoConditions"] = aiConditions;
+      }
+      if (aiMedications.length > 0) {
+        emergencyUpdate["emergency.autoMedications"] = aiMedications;
+      }
+      if (aiAllergies.length > 0) {
+        emergencyUpdate["emergency.autoAllergies"] = aiAllergies;
+      }
+      // Age and blood group — only set if not already manually set
+      if (analysis.age) emergencyUpdate["emergency.autoAge"] = String(analysis.age).replace(/\D.*/, "");
+      if (analysis.bloodGroup) emergencyUpdate["emergency.autoBloodGroup"] = analysis.bloodGroup;
+      if (analysis.gender) emergencyUpdate["emergency.autoGender"] = analysis.gender;
 
       await updateDoc(doc(db, "users", userData.uid), {
         "healthSummary.lastAnalyzedAt": serverTimestamp(),
         "healthSummary.metrics": analysis.metrics || [],
         "healthSummary.summary": analysis.summary || "",
         "healthSummary.lab": analysis.lab || "",
-        // Only pre-populate emergency conditions if none set yet
-        ...(autoConditions.length > 0 && {
-          "emergency.autoConditions": autoConditions,
-        }),
+        ...emergencyUpdate,
       });
 
       Alert.alert("Saved!", "AI analysis saved to your health records.", [
