@@ -15,7 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { BarChart } from "react-native-chart-kit";
+import { BarChart, LineChart } from "react-native-chart-kit";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
 
@@ -88,6 +88,7 @@ export default function AIDashboard() {
   const [activeTab, setActiveTab] = useState("metrics");
   const [history, setHistory]     = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [histDashTab, setHistDashTab] = useState("History");
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -308,73 +309,209 @@ export default function AIDashboard() {
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // RENDER — History (no reportUri passed)
+  // RENDER — History / Dashboard (no reportUri passed)
   // ═══════════════════════════════════════════════════════════════════════════
   if (step === "history") {
+    // Build trend chart from all history
+    const buildTrendChart = () => {
+      if (history.length === 0) return null;
+      // Collect unique metric names that have numeric values across all analyses
+      const nameSet = new Set();
+      history.forEach((h) =>
+        (h.metrics || []).forEach((m) => {
+          if (!isNaN(parseFloat(m.value))) nameSet.add(m.name);
+        })
+      );
+      const metricNames = Array.from(nameSet).slice(0, 4);
+      if (metricNames.length === 0) return null;
+
+      // For each metric, get the latest 5 values in chronological order
+      const sliced = history.slice(0, 5).reverse();
+      const labels = sliced.map((h) => {
+        if (h.analyzedAt?.toDate) {
+          const d = h.analyzedAt.toDate();
+          return `${d.getDate()}/${d.getMonth() + 1}`;
+        }
+        return h.date?.slice(0, 5) || "—";
+      });
+
+      const datasets = metricNames.map((name, idx) => {
+        const COLORS = ["#8B5CF6", "#2E75B6", "#10B981", "#F59E0B"];
+        const vals = sliced.map((h) => {
+          const m = (h.metrics || []).find((x) => x.name === name);
+          return m ? parseFloat(m.value) || 0 : 0;
+        });
+        return { data: vals, color: () => COLORS[idx % 4], strokeWidth: 2 };
+      });
+
+      return { labels, datasets, legend: metricNames };
+    };
+
+    const trendData = buildTrendChart();
+
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: "#F8FAFC" }]}>
+        {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()}>
             <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>AI Analysis History</Text>
+          <Text style={styles.headerTitle}>AI Dashboard</Text>
           <TouchableOpacity onPress={() => navigation.navigate("UploadReport")}>
             <MaterialCommunityIcons name="plus" size={28} color="#8B5CF6" />
           </TouchableOpacity>
         </View>
 
+        {/* Tab bar */}
+        <View style={styles.dashTabRow}>
+          {["History", "Trends", "Chat"].map((t) => (
+            <TouchableOpacity
+              key={t}
+              style={[styles.dashTab, histDashTab === t && styles.dashTabActive]}
+              onPress={() => setHistDashTab(t)}
+            >
+              <MaterialCommunityIcons
+                name={t === "History" ? "clock-outline" : t === "Trends" ? "chart-line" : "robot-outline"}
+                size={16}
+                color={histDashTab === t ? "#8B5CF6" : "#94A3B8"}
+              />
+              <Text style={[styles.dashTabText, histDashTab === t && styles.dashTabTextActive]}>{t}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         {historyLoading ? (
           <View style={styles.center}>
             <ActivityIndicator size="large" color="#8B5CF6" />
-            <Text style={{ color: "#64748B", marginTop: 12 }}>Loading history...</Text>
+            <Text style={{ color: "#64748B", marginTop: 12 }}>Loading...</Text>
           </View>
         ) : history.length === 0 ? (
           <View style={styles.center}>
             <MaterialCommunityIcons name="robot-outline" size={60} color="#CBD5E1" />
             <Text style={{ fontSize: 18, fontWeight: "800", color: "#1E293B", marginTop: 16 }}>No analyses yet</Text>
-            <Text style={{ color: "#64748B", textAlign: "center", marginTop: 8 }}>Upload a lab report and run AI analysis to see results here.</Text>
+            <Text style={{ color: "#64748B", textAlign: "center", marginTop: 8 }}>
+              Upload a lab report image and tap "Analyze with AI" to get started.
+            </Text>
             <TouchableOpacity style={[styles.retryBtn, { marginTop: 24 }]} onPress={() => navigation.navigate("UploadReport")}>
               <Text style={styles.retryBtnText}>Upload Report</Text>
             </TouchableOpacity>
           </View>
-        ) : (
+        ) : histDashTab === "History" ? (
           <ScrollView contentContainerStyle={{ padding: 16 }}>
             {history.map((item) => {
-              const abnormal = (item.metrics || []).filter((m) => m.status !== "normal" && m.status !== "Normal");
+              const abnormal = (item.metrics || []).filter(
+                (m) => String(m.status).toLowerCase() !== "normal"
+              );
               const date = item.analyzedAt?.toDate
                 ? item.analyzedAt.toDate().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
                 : item.date || "—";
               return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.historyCard}
-                  onPress={() => {
-                    setAnalysis(item);
-                    setOcrText(item.ocrText || "");
-                    setStep("done");
-                  }}
-                >
-                  <View style={styles.historyCardTop}>
-                    <View style={styles.historyLabBadge}>
-                      <MaterialCommunityIcons name="hospital-building" size={14} color="#8B5CF6" />
-                      <Text style={styles.historyLabText}>{item.lab || "Lab Report"}</Text>
-                    </View>
-                    <Text style={styles.historyDate}>{date}</Text>
-                  </View>
-                  <Text style={styles.historySummary} numberOfLines={2}>{item.summary || "No summary"}</Text>
-                  <View style={styles.historyMeta}>
-                    <Text style={styles.historyMetrics}>{item.metrics?.length || 0} metrics</Text>
-                    {abnormal.length > 0 && (
-                      <View style={styles.historyWarnBadge}>
-                        <Text style={styles.historyWarnText}>{abnormal.length} need attention</Text>
+                <View key={item.id} style={styles.historyCard}>
+                  <TouchableOpacity
+                    onPress={() => { setAnalysis(item); setOcrText(item.ocrText || ""); setStep("done"); }}
+                  >
+                    <View style={styles.historyCardTop}>
+                      <View style={styles.historyLabBadge}>
+                        <MaterialCommunityIcons name="hospital-building" size={14} color="#8B5CF6" />
+                        <Text style={styles.historyLabText}>{item.lab || "Lab Report"}</Text>
                       </View>
-                    )}
-                    <MaterialCommunityIcons name="chevron-right" size={18} color="#CBD5E1" />
-                  </View>
-                </TouchableOpacity>
+                      <Text style={styles.historyDate}>{date}</Text>
+                    </View>
+                    <Text style={styles.historySummary} numberOfLines={2}>{item.summary || "No summary"}</Text>
+                    <View style={styles.historyMeta}>
+                      <Text style={styles.historyMetrics}>{item.metrics?.length || 0} metrics</Text>
+                      {abnormal.length > 0 && (
+                        <View style={styles.historyWarnBadge}>
+                          <Text style={styles.historyWarnText}>{abnormal.length} need attention</Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                  {/* Chat button per report */}
+                  <TouchableOpacity
+                    style={styles.historyChatBtn}
+                    onPress={() => navigation.navigate("AIChat")}
+                  >
+                    <MaterialCommunityIcons name="robot-outline" size={15} color="#8B5CF6" />
+                    <Text style={styles.historyChatBtnText}>Ask AI about this</Text>
+                  </TouchableOpacity>
+                </View>
               );
             })}
           </ScrollView>
+        ) : histDashTab === "Trends" ? (
+          <ScrollView contentContainerStyle={{ padding: 16 }}>
+            <Text style={styles.trendTitle}>Health Metric Trends</Text>
+            <Text style={styles.trendSub}>Across your last {Math.min(history.length, 5)} analyses</Text>
+            {trendData ? (
+              <>
+                <LineChart
+                  data={trendData}
+                  width={screenWidth - 32}
+                  height={240}
+                  chartConfig={{
+                    backgroundColor: "#1E293B",
+                    backgroundGradientFrom: "#1E293B",
+                    backgroundGradientTo: "#334155",
+                    decimalPlaces: 1,
+                    color: (opacity = 1) => `rgba(255,255,255,${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(255,255,255,${opacity})`,
+                    style: { borderRadius: 16 },
+                  }}
+                  bezier
+                  style={{ borderRadius: 16, marginBottom: 16 }}
+                  legend={trendData.legend}
+                />
+                {/* Per-metric summary cards */}
+                {trendData.legend.map((name, idx) => {
+                  const COLORS = ["#8B5CF6", "#2E75B6", "#10B981", "#F59E0B"];
+                  const latest = history[0]?.metrics?.find((m) => m.name === name);
+                  if (!latest) return null;
+                  const cfg = STATUS_CONFIG[latest.status] || STATUS_CONFIG.normal;
+                  return (
+                    <View key={name} style={[styles.trendMetricCard, { borderLeftColor: COLORS[idx % 4] }]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.trendMetricName}>{name}</Text>
+                        <Text style={styles.trendMetricRange}>Normal: {latest.normalRange || "—"}</Text>
+                      </View>
+                      <View style={{ alignItems: "flex-end" }}>
+                        <Text style={[styles.trendMetricVal, { color: cfg.color }]}>
+                          {latest.value} {latest.unit}
+                        </Text>
+                        <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+                          <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            ) : (
+              <View style={styles.center}>
+                <MaterialCommunityIcons name="chart-line" size={50} color="#CBD5E1" />
+                <Text style={{ color: "#94A3B8", marginTop: 12, textAlign: "center" }}>
+                  Not enough numeric data to draw trends yet.
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+        ) : (
+          /* Chat tab — navigate directly */
+          <View style={styles.center}>
+            <MaterialCommunityIcons name="robot" size={60} color="#8B5CF6" />
+            <Text style={{ fontSize: 18, fontWeight: "800", color: "#1E293B", marginTop: 16 }}>
+              Chat with MediVault AI
+            </Text>
+            <Text style={{ color: "#64748B", textAlign: "center", marginTop: 8, paddingHorizontal: 30 }}>
+              Ask questions about your health reports. AI has access to all your {history.length} analyses.
+            </Text>
+            <TouchableOpacity
+              style={[styles.retryBtn, { marginTop: 24, backgroundColor: "#8B5CF6" }]}
+              onPress={() => navigation.navigate("AIChat")}
+            >
+              <Text style={styles.retryBtnText}>Start Chat</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
     );
@@ -928,6 +1065,62 @@ const styles = StyleSheet.create({
   saveBtnText: { color: "#FFF", fontWeight: "900", letterSpacing: 0.5 },
   uploadAnotherBtn: { alignItems: "center", marginTop: 16, marginBottom: 8 },
   uploadAnotherText: { color: "#8B5CF6", fontWeight: "700", fontSize: 14 },
+
+  // Dashboard tabs
+  dashTabRow: {
+    flexDirection: "row",
+    backgroundColor: "#FFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  dashTab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+  dashTabActive: { borderBottomColor: "#8B5CF6" },
+  dashTabText: { fontSize: 13, fontWeight: "700", color: "#94A3B8" },
+  dashTabTextActive: { color: "#8B5CF6" },
+
+  // Trend
+  trendTitle: { fontSize: 18, fontWeight: "900", color: "#1E293B", marginBottom: 4 },
+  trendSub: { fontSize: 12, color: "#64748B", marginBottom: 16 },
+  trendMetricCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderLeftWidth: 4,
+    elevation: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+  },
+  trendMetricName: { fontSize: 14, fontWeight: "800", color: "#1E293B" },
+  trendMetricRange: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
+  trendMetricVal: { fontSize: 20, fontWeight: "900" },
+
+  // History chat button
+  historyChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+    alignSelf: "flex-start",
+    backgroundColor: "#F5F3FF",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  historyChatBtnText: { fontSize: 12, fontWeight: "700", color: "#8B5CF6" },
 
   // History styles
   historyCard: {

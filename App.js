@@ -23,6 +23,7 @@ import UploadReportScreen from "./screens/UploadReportScreen";
 import VerificationScreen from "./screens/VerificationScreen";
 import FamilyScreen from "./screens/FamilyScreen";
 import ReportViewerScreen from "./screens/ReportViewerScreen";
+import AIChatScreen from "./screens/AIChatScreen";
 
 const Stack = createStackNavigator();
 
@@ -72,6 +73,7 @@ function AppNavigator() {
             <Stack.Screen name="Reports" component={ReportsScreen} />
             <Stack.Screen name="UploadReport" component={UploadReportScreen} />
             <Stack.Screen name="ReportViewer" component={ReportViewerScreen} />
+            <Stack.Screen name="AIChat" component={AIChatScreen} />
           </>
         )}
       </Stack.Navigator>
