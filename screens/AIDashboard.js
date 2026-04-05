@@ -1,23 +1,61 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as FileSystem from "expo-file-system";
+import * as Speech from "expo-speech";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { BarChart } from "react-native-chart-kit";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
 
 const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(API_KEY);
+const screenWidth = Dimensions.get("window").width;
+
+// ─── Gemini prompt — extracts full blood panel as structured JSON ─────────────
+const EXTRACTION_PROMPT = `You are an expert medical OCR system. Analyze this Indian lab report image.
+
+Step 1 — OCR: Read ALL text visible in the image.
+Step 2 — Extract: Find every blood test metric (HbA1c, Fasting Sugar, Post Prandial Sugar, Total Cholesterol, LDL, HDL, Triglycerides, Haemoglobin, Creatinine, TSH, Vitamin D, Vitamin B12, etc.)
+Step 3 — Classify each metric status as: "normal", "borderline", or "high"
+Step 4 — Write a plain-English voice summary (2-3 sentences, suitable for an elderly person)
+
+Return ONLY valid JSON in this exact format (no markdown, no code blocks):
+{
+  "date": "DD/MM/YYYY",
+  "lab": "Lab name from report",
+  "patient": "Patient name if visible",
+  "metrics": [
+    {
+      "name": "HbA1c",
+      "value": 7.2,
+      "unit": "%",
+      "normalRange": "4.0 - 5.7",
+      "status": "high"
+    }
+  ],
+  "ocrText": "First 300 characters of raw text from the report",
+  "summary": "Your blood test results are back. Your HbA1c is 7.2 percent which is slightly high, meaning your average blood sugar over 3 months is elevated. I recommend speaking with your doctor about dietary changes."
+}`;
+
+// ─── Status config ────────────────────────────────────────────────────────────
+const STATUS_CONFIG = {
+  normal:     { color: "#22C55E", bg: "#DCFCE7", label: "Normal",     icon: "check-circle" },
+  borderline: { color: "#F59E0B", bg: "#FEF3C7", label: "Borderline", icon: "alert-circle" },
+  high:       { color: "#EF4444", bg: "#FEE2E2", label: "High",       icon: "close-circle" },
+  low:        { color: "#3B82F6", bg: "#DBEAFE", label: "Low",        icon: "arrow-down-circle" },
+};
 
 export default function AIDashboard() {
   const route = useRoute();
@@ -25,65 +63,89 @@ export default function AIDashboard() {
   const { userData } = useUser();
   const { reportUri } = route.params || {};
 
-  const [loading, setLoading] = useState(true);
-  const [analysis, setAnalysis] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [step, setStep]           = useState("scanning"); // scanning | done | error
+  const [ocrText, setOcrText]     = useState("");
+  const [analysis, setAnalysis]   = useState(null);       // { date, lab, patient, metrics[], summary }
+  const [saving, setSaving]       = useState(false);
+  const [speaking, setSpeaking]   = useState(false);
+  const [showOcr, setShowOcr]     = useState(false);
+  const [activeTab, setActiveTab] = useState("metrics");  // metrics | chart
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
 
   useEffect(() => {
-    if (reportUri) {
-      analyzeReport();
-    } else {
-      setLoading(false);
-    }
+    if (reportUri) analyzeReport();
+    else setStep("done");
   }, [reportUri]);
 
+  // ─── OCR + AI extraction ────────────────────────────────────────────────────
   const analyzeReport = async () => {
     try {
+      setStep("scanning");
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-      // H-5 Fix: Use expo-file-system instead of web FileReader
       const base64Data = await FileSystem.readAsStringAsync(reportUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      const prompt =
-        'Extract data from this Indian lab report. Focus on HbA1c, Fasting, or Post Prandial sugar. Return ONLY JSON: {"testType": "HbA1c", "value": 7.2, "date": "DD/MM/YYYY", "lab": "Lab Name", "insight": "short health tip"}';
-
       const result = await model.generateContent([
-        prompt,
+        EXTRACTION_PROMPT,
         { inlineData: { data: base64Data, mimeType: "image/jpeg" } },
       ]);
 
-      const text = result.response.text();
-      const cleanJson = text.replace(/```json|```/g, "").trim();
+      const raw = result.response.text().replace(/```json|```/g, "").trim();
 
-      // H-6 Fix: Safe JSON parsing with fallback
+      let parsed;
       try {
-        const parsed = JSON.parse(cleanJson);
-        if (parsed.testType && parsed.value !== undefined) {
-          setAnalysis(parsed);
-        } else {
-          throw new Error("Missing required fields");
-        }
-      } catch (parseError) {
-        setAnalysis({
-          testType: "Lab Report",
-          value: "--",
-          date: new Date().toLocaleDateString(),
+        parsed = JSON.parse(raw);
+      } catch {
+        // Gemini returned prose instead of JSON — build a fallback
+        parsed = {
+          date: new Date().toLocaleDateString("en-GB"),
           lab: "Unknown",
-          insight: text.slice(0, 200),
-        });
+          patient: "",
+          metrics: [],
+          ocrText: raw.slice(0, 300),
+          summary:
+            "I could not extract structured data from this image. Please try with a clearer photo of your lab report.",
+        };
       }
-      setLoading(false);
-    } catch (error) {
-      Alert.alert(
-        "Analysis Error",
-        "MediVault AI couldn't read the image. Please try again with a clearer photo.",
-      );
-      setLoading(false);
+
+      if (!isMounted.current) return;
+      setAnalysis(parsed);
+      setOcrText(parsed.ocrText || "");
+      setStep("done");
+    } catch (err) {
+      if (!isMounted.current) return;
+      setStep("error");
     }
   };
 
+  // ─── Voice explanation ──────────────────────────────────────────────────────
+  const handleSpeak = async () => {
+    if (speaking) {
+      await Speech.stop();
+      setSpeaking(false);
+      return;
+    }
+
+    const text = analysis?.summary ||
+      "No analysis available yet. Please upload a lab report first.";
+
+    setSpeaking(true);
+    Speech.speak(text, {
+      language: "en-IN",   // Indian English accent
+      pitch: 1.0,
+      rate: 0.85,          // Slightly slower for elderly users
+      onDone: () => { if (isMounted.current) setSpeaking(false); },
+      onError: () => { if (isMounted.current) setSpeaking(false); },
+    });
+  };
+
+  // ─── Save to Firestore ──────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!analysis || !userData?.uid) {
       navigation.navigate("Home");
@@ -92,182 +154,593 @@ export default function AIDashboard() {
     setSaving(true);
     try {
       await addDoc(collection(db, "users", userData.uid, "aiAnalyses"), {
-        testType: analysis.testType,
-        value: analysis.value,
         date: analysis.date,
         lab: analysis.lab,
-        insight: analysis.insight,
+        patient: analysis.patient,
+        metrics: analysis.metrics,
+        summary: analysis.summary,
+        ocrText: analysis.ocrText,
         analyzedAt: serverTimestamp(),
       });
       Alert.alert("Saved!", "AI analysis saved to your health records.", [
         { text: "OK", onPress: () => navigation.navigate("Home") },
       ]);
     } catch (e) {
-      Alert.alert("Save Error", "Could not save analysis. " + e.message);
+      Alert.alert("Save Error", "Could not save. " + e.message);
     } finally {
-      setSaving(false);
+      if (isMounted.current) setSaving(false);
     }
   };
 
-  if (loading) {
+  // ─── Chart data ─────────────────────────────────────────────────────────────
+  const buildChartData = () => {
+    const chartable = (analysis?.metrics || [])
+      .filter((m) => typeof m.value === "number")
+      .slice(0, 6); // max 6 bars fits the screen
+
+    if (chartable.length === 0) return null;
+
+    return {
+      labels: chartable.map((m) =>
+        m.name.length > 6 ? m.name.slice(0, 5) + "…" : m.name
+      ),
+      datasets: [
+        {
+          data: chartable.map((m) => m.value),
+          colors: chartable.map((m) => {
+            const cfg = STATUS_CONFIG[m.status] || STATUS_CONFIG.normal;
+            return () => cfg.color;
+          }),
+        },
+      ],
+    };
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER — Scanning state
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (step === "scanning") {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#8B5CF6" />
-        <Text style={styles.loadingText}>
-          MediVault AI Analysis in progress...
-        </Text>
+        <View style={styles.scanningCard}>
+          <ActivityIndicator size="large" color="#8B5CF6" />
+          <Text style={styles.scanningTitle}>MediVault AI Scanning</Text>
+          <Text style={styles.scanningStep}>Step 1: Reading your report (OCR)...</Text>
+          <Text style={styles.scanningStep}>Step 2: Extracting blood test values...</Text>
+          <Text style={styles.scanningStep}>Step 3: Analyzing with Gemini AI...</Text>
+          <Text style={styles.scanningNote}>
+            Powered by Google Gemini · No extra API key needed
+          </Text>
+        </View>
       </View>
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER — Error state
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (step === "error") {
+    return (
+      <View style={styles.center}>
+        <MaterialCommunityIcons name="image-broken" size={60} color="#EF4444" />
+        <Text style={styles.errorTitle}>Could not read report</Text>
+        <Text style={styles.errorSub}>
+          Try a clearer, well-lit photo of your lab report.
+        </Text>
+        <TouchableOpacity
+          style={styles.retryBtn}
+          onPress={() => navigation.navigate("UploadReport")}
+        >
+          <Text style={styles.retryBtnText}>Upload Again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER — Results
+  // ═══════════════════════════════════════════════════════════════════════════
+  const chartData = buildChartData();
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <TouchableOpacity
-        style={styles.backBtn}
-        onPress={() => navigation.goBack()}
-      >
-        <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
-      </TouchableOpacity>
+    <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
 
-      <Text style={styles.headerTitle}>AI Insights</Text>
+      {/* ── Header ─────────────────────────────────────────────── */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => { Speech.stop(); navigation.goBack(); }}>
+          <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>AI Analysis</Text>
+        <View style={{ width: 28 }} />
+      </View>
 
-      {analysis ? (
-        <View style={styles.resultCard}>
-          <Text style={styles.testType}>{analysis.testType} Results</Text>
-          <View style={styles.dataBox}>
-            <Text style={styles.valueText}>
-              {analysis.value}
-              {typeof analysis.value === "number" ? "%" : ""}
+      {/* ── Report meta ────────────────────────────────────────── */}
+      {analysis && (
+        <View style={styles.metaCard}>
+          <View style={styles.metaRow}>
+            <MaterialCommunityIcons name="hospital-building" size={18} color="#8B5CF6" />
+            <Text style={styles.metaText}>{analysis.lab || "Lab"}</Text>
+          </View>
+          {!!analysis.patient && (
+            <View style={styles.metaRow}>
+              <MaterialCommunityIcons name="account" size={18} color="#8B5CF6" />
+              <Text style={styles.metaText}>{analysis.patient}</Text>
+            </View>
+          )}
+          <View style={styles.metaRow}>
+            <MaterialCommunityIcons name="calendar" size={18} color="#8B5CF6" />
+            <Text style={styles.metaText}>{analysis.date || "Date unknown"}</Text>
+          </View>
+          <View style={styles.metricsCountBadge}>
+            <Text style={styles.metricsCountText}>
+              {analysis.metrics?.length || 0} metrics extracted
             </Text>
-            <Text style={styles.label}>Detected Value</Text>
-          </View>
-          <View style={styles.infoRow}>
-            <MaterialCommunityIcons name="calendar" size={20} color="#64748B" />
-            <Text style={styles.infoText}>{analysis.date}</Text>
-          </View>
-          <View style={styles.infoRow}>
-            <MaterialCommunityIcons
-              name="hospital-building"
-              size={20}
-              color="#64748B"
-            />
-            <Text style={styles.infoText}>{analysis.lab}</Text>
-          </View>
-          <View style={styles.insightBox}>
-            <Text style={styles.insightTitle}>AI Health Tip:</Text>
-            <Text style={styles.insightText}>{analysis.insight}</Text>
           </View>
         </View>
-      ) : (
-        <View style={styles.emptyCard}>
-          <MaterialCommunityIcons name="robot-outline" size={60} color="#CBD5E1" />
-          <Text style={styles.errorText}>
-            No report data found. Please upload a report first.
+      )}
+
+      {/* ── Voice Explain Button ────────────────────────────────── */}
+      <TouchableOpacity
+        style={[styles.voiceBtn, speaking && styles.voiceBtnActive]}
+        onPress={handleSpeak}
+      >
+        <MaterialCommunityIcons
+          name={speaking ? "stop-circle" : "volume-high"}
+          size={24}
+          color="#FFF"
+        />
+        <View style={{ marginLeft: 12 }}>
+          <Text style={styles.voiceBtnTitle}>
+            {speaking ? "Tap to Stop" : "Voice Explain"}
           </Text>
+          <Text style={styles.voiceBtnSub}>
+            {speaking ? "Speaking in English..." : "AI reads your results aloud"}
+          </Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* ── AI Summary Box ──────────────────────────────────────── */}
+      {!!analysis?.summary && (
+        <View style={styles.summaryBox}>
+          <Text style={styles.summaryLabel}>AI Summary</Text>
+          <Text style={styles.summaryText}>{analysis.summary}</Text>
+          <Text style={styles.disclaimer}>
+            For informational purposes only. Always consult your doctor.
+          </Text>
+        </View>
+      )}
+
+      {/* ── Tab switcher (Metrics | Chart) ─────────────────────── */}
+      {analysis?.metrics?.length > 0 && (
+        <View style={styles.tabRow}>
           <TouchableOpacity
-            style={styles.uploadBtn}
-            onPress={() => navigation.navigate("UploadReport")}
+            style={[styles.tab, activeTab === "metrics" && styles.tabActive]}
+            onPress={() => setActiveTab("metrics")}
           >
-            <Text style={styles.uploadBtnText}>Upload Report</Text>
+            <Text style={[styles.tabText, activeTab === "metrics" && styles.tabTextActive]}>
+              Metrics
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === "chart" && styles.tabActive]}
+            onPress={() => setActiveTab("chart")}
+          >
+            <Text style={[styles.tabText, activeTab === "chart" && styles.tabTextActive]}>
+              Chart
+            </Text>
           </TouchableOpacity>
         </View>
       )}
 
+      {/* ── Metrics list ───────────────────────────────────────── */}
+      {activeTab === "metrics" && (
+        <View style={styles.metricsSection}>
+          {analysis?.metrics?.length > 0 ? (
+            analysis.metrics.map((m, i) => {
+              const cfg = STATUS_CONFIG[m.status] || STATUS_CONFIG.normal;
+              return (
+                <View key={i} style={[styles.metricCard, { borderLeftColor: cfg.color }]}>
+                  <View style={styles.metricLeft}>
+                    <Text style={styles.metricName}>{m.name}</Text>
+                    <Text style={styles.metricRange}>Normal: {m.normalRange || "—"}</Text>
+                  </View>
+                  <View style={styles.metricRight}>
+                    <Text style={[styles.metricValue, { color: cfg.color }]}>
+                      {m.value}
+                      <Text style={styles.metricUnit}> {m.unit}</Text>
+                    </Text>
+                    <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+                      <MaterialCommunityIcons name={cfg.icon} size={12} color={cfg.color} />
+                      <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })
+          ) : (
+            <View style={styles.emptyMetrics}>
+              <MaterialCommunityIcons name="robot-confused-outline" size={50} color="#CBD5E1" />
+              <Text style={styles.emptyMetricsText}>
+                No structured values extracted. Try uploading a clearer image.
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── Bar Chart ──────────────────────────────────────────── */}
+      {activeTab === "chart" && (
+        <View style={styles.chartSection}>
+          {chartData ? (
+            <>
+              <Text style={styles.chartTitle}>Your Values at a Glance</Text>
+              <Text style={styles.chartSubtitle}>
+                Colors: Green = Normal · Yellow = Borderline · Red = High
+              </Text>
+              <BarChart
+                data={chartData}
+                width={screenWidth - 40}
+                height={240}
+                withCustomBarColorFromData
+                flatColor
+                showValuesOnTopOfBars
+                chartConfig={{
+                  backgroundColor: "#1E293B",
+                  backgroundGradientFrom: "#1E293B",
+                  backgroundGradientTo: "#334155",
+                  decimalPlaces: 1,
+                  color: (opacity = 1) => `rgba(255,255,255,${opacity})`,
+                  labelColor: (opacity = 1) => `rgba(255,255,255,${opacity})`,
+                  barPercentage: 0.7,
+                  style: { borderRadius: 16 },
+                }}
+                style={styles.chart}
+                fromZero
+              />
+              <View style={styles.chartLegend}>
+                {analysis.metrics
+                  .filter((m) => typeof m.value === "number")
+                  .slice(0, 6)
+                  .map((m, i) => {
+                    const cfg = STATUS_CONFIG[m.status] || STATUS_CONFIG.normal;
+                    return (
+                      <View key={i} style={styles.legendItem}>
+                        <View style={[styles.legendDot, { backgroundColor: cfg.color }]} />
+                        <Text style={styles.legendText}>
+                          {m.name}: {m.value} {m.unit}
+                        </Text>
+                      </View>
+                    );
+                  })}
+              </View>
+            </>
+          ) : (
+            <View style={styles.emptyMetrics}>
+              <MaterialCommunityIcons name="chart-bar" size={50} color="#CBD5E1" />
+              <Text style={styles.emptyMetricsText}>
+                No numeric values to chart. Metrics need numeric values.
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── OCR Raw Text (collapsible) ──────────────────────────── */}
+      {!!ocrText && (
+        <TouchableOpacity
+          style={styles.ocrToggle}
+          onPress={() => setShowOcr(!showOcr)}
+        >
+          <MaterialCommunityIcons
+            name={showOcr ? "chevron-up" : "chevron-down"}
+            size={18}
+            color="#64748B"
+          />
+          <Text style={styles.ocrToggleText}>
+            {showOcr ? "Hide" : "Show"} extracted OCR text
+          </Text>
+        </TouchableOpacity>
+      )}
+      {showOcr && (
+        <View style={styles.ocrBox}>
+          <Text style={styles.ocrLabel}>Raw OCR Output (Gemini)</Text>
+          <Text style={styles.ocrText}>{ocrText}</Text>
+        </View>
+      )}
+
+      {/* ── Action buttons ─────────────────────────────────────── */}
       <TouchableOpacity
-        style={[styles.actionBtn, saving && { opacity: 0.7 }]}
+        style={[styles.saveBtn, saving && { opacity: 0.7 }]}
         onPress={handleSave}
         disabled={saving}
       >
         {saving ? (
           <ActivityIndicator color="#FFF" />
         ) : (
-          <Text style={styles.actionBtnText}>DONE & SAVE</Text>
+          <>
+            <MaterialCommunityIcons name="content-save" size={20} color="#FFF" />
+            <Text style={styles.saveBtnText}>SAVE TO HEALTH RECORDS</Text>
+          </>
         )}
       </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.uploadAnotherBtn}
+        onPress={() => { Speech.stop(); navigation.navigate("UploadReport"); }}
+      >
+        <Text style={styles.uploadAnotherText}>Upload Another Report</Text>
+      </TouchableOpacity>
+
     </ScrollView>
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
     backgroundColor: "#F8FAFC",
-    padding: 25,
-    paddingTop: 60,
+    paddingBottom: 40,
   },
   center: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#F8FAFC",
+    padding: 30,
   },
-  backBtn: { marginBottom: 15 },
-  headerTitle: {
-    fontSize: 28,
+
+  // Scanning
+  scanningCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 24,
+    padding: 30,
+    alignItems: "center",
+    elevation: 4,
+    width: "100%",
+  },
+  scanningTitle: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#8B5CF6",
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  scanningStep: {
+    color: "#64748B",
+    fontSize: 13,
+    marginBottom: 6,
+    fontWeight: "500",
+  },
+  scanningNote: {
+    marginTop: 20,
+    fontSize: 11,
+    color: "#94A3B8",
+    textAlign: "center",
+  },
+
+  // Error
+  errorTitle: {
+    fontSize: 20,
     fontWeight: "900",
     color: "#1E293B",
-    marginBottom: 30,
+    marginTop: 16,
   },
-  loadingText: { marginTop: 20, color: "#8B5CF6", fontWeight: "bold" },
-  resultCard: {
-    backgroundColor: "#FFF",
-    borderRadius: 30,
-    padding: 25,
-    elevation: 5,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-  },
-  testType: {
-    fontSize: 18,
-    fontWeight: "700",
+  errorSub: {
     color: "#64748B",
-    marginBottom: 15,
+    textAlign: "center",
+    marginTop: 8,
+    marginBottom: 24,
   },
-  dataBox: { alignItems: "center", marginVertical: 20 },
-  valueText: { fontSize: 48, fontWeight: "900", color: "#8B5CF6" },
-  label: { color: "#94A3B8", fontWeight: "600" },
-  infoRow: {
+  retryBtn: {
+    backgroundColor: "#8B5CF6",
+    paddingHorizontal: 30,
+    paddingVertical: 14,
+    borderRadius: 16,
+  },
+  retryBtnText: { color: "#FFF", fontWeight: "700" },
+
+  // Header
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    paddingTop: 50,
+    backgroundColor: "#FFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#1E293B",
+    letterSpacing: 0.5,
+  },
+
+  // Meta card
+  metaCard: {
+    backgroundColor: "#FFF",
+    margin: 16,
+    borderRadius: 20,
+    padding: 20,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+  },
+  metaRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 10,
     gap: 10,
+    marginBottom: 8,
   },
-  infoText: { color: "#1E293B", fontWeight: "700" },
-  insightBox: {
+  metaText: { fontSize: 14, fontWeight: "600", color: "#1E293B" },
+  metricsCountBadge: {
     backgroundColor: "#F5F3FF",
-    padding: 20,
     borderRadius: 20,
-    marginTop: 25,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    alignSelf: "flex-start",
+    marginTop: 6,
   },
-  insightTitle: { fontWeight: "900", color: "#8B5CF6", marginBottom: 5 },
-  insightText: { color: "#4C1D95", lineHeight: 20 },
-  emptyCard: {
-    backgroundColor: "#FFF",
-    borderRadius: 30,
-    padding: 40,
-    elevation: 3,
+  metricsCountText: { color: "#8B5CF6", fontWeight: "700", fontSize: 12 },
+
+  // Voice button
+  voiceBtn: {
+    flexDirection: "row",
     alignItems: "center",
-  },
-  errorText: {
-    textAlign: "center",
-    color: "#64748B",
-    fontWeight: "600",
-    marginTop: 15,
-  },
-  uploadBtn: {
     backgroundColor: "#8B5CF6",
-    paddingHorizontal: 25,
-    paddingVertical: 12,
-    borderRadius: 15,
-    marginTop: 20,
-  },
-  uploadBtnText: { color: "#FFF", fontWeight: "700" },
-  actionBtn: {
-    backgroundColor: "#1E293B",
-    padding: 20,
+    marginHorizontal: 16,
+    marginBottom: 12,
     borderRadius: 20,
-    marginTop: 30,
-    alignItems: "center",
+    padding: 18,
+    elevation: 4,
+    shadowColor: "#8B5CF6",
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
   },
-  actionBtnText: { color: "#FFF", fontWeight: "900", letterSpacing: 1 },
+  voiceBtnActive: { backgroundColor: "#7C3AED" },
+  voiceBtnTitle: { color: "#FFF", fontWeight: "900", fontSize: 15 },
+  voiceBtnSub: { color: "rgba(255,255,255,0.75)", fontSize: 12, marginTop: 2 },
+
+  // Summary
+  summaryBox: {
+    backgroundColor: "#F5F3FF",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 20,
+    padding: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: "#8B5CF6",
+  },
+  summaryLabel: { fontWeight: "900", color: "#8B5CF6", marginBottom: 8, fontSize: 12 },
+  summaryText: { color: "#4C1D95", lineHeight: 22, fontSize: 14, fontWeight: "500" },
+  disclaimer: {
+    marginTop: 10,
+    fontSize: 10,
+    color: "#94A3B8",
+    fontStyle: "italic",
+  },
+
+  // Tabs
+  tabRow: {
+    flexDirection: "row",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: "#E2E8F0",
+    borderRadius: 14,
+    padding: 4,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 12,
+  },
+  tabActive: { backgroundColor: "#FFF", elevation: 2 },
+  tabText: { fontWeight: "700", color: "#94A3B8", fontSize: 13 },
+  tabTextActive: { color: "#1E293B" },
+
+  // Metrics
+  metricsSection: { paddingHorizontal: 16 },
+  metricCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderLeftWidth: 4,
+    elevation: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+  },
+  metricLeft: { flex: 1 },
+  metricName: { fontSize: 14, fontWeight: "800", color: "#1E293B" },
+  metricRange: { fontSize: 11, color: "#94A3B8", marginTop: 3, fontWeight: "500" },
+  metricRight: { alignItems: "flex-end" },
+  metricValue: { fontSize: 22, fontWeight: "900" },
+  metricUnit: { fontSize: 12, fontWeight: "600", color: "#64748B" },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    marginTop: 4,
+  },
+  statusText: { fontSize: 10, fontWeight: "700" },
+  emptyMetrics: {
+    alignItems: "center",
+    padding: 40,
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+  },
+  emptyMetricsText: {
+    color: "#94A3B8",
+    textAlign: "center",
+    marginTop: 12,
+    fontWeight: "500",
+  },
+
+  // Chart
+  chartSection: { paddingHorizontal: 16 },
+  chartTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#1E293B",
+    marginBottom: 4,
+  },
+  chartSubtitle: { fontSize: 11, color: "#64748B", marginBottom: 12 },
+  chart: { borderRadius: 16, marginBottom: 12 },
+  chartLegend: { backgroundColor: "#FFF", borderRadius: 16, padding: 16 },
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+    gap: 8,
+  },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendText: { fontSize: 12, color: "#1E293B", fontWeight: "600" },
+
+  // OCR
+  ocrToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 4,
+  },
+  ocrToggleText: { color: "#64748B", fontWeight: "600", fontSize: 13 },
+  ocrBox: {
+    marginHorizontal: 16,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 8,
+  },
+  ocrLabel: { fontSize: 11, fontWeight: "700", color: "#8B5CF6", marginBottom: 6 },
+  ocrText: { fontSize: 12, color: "#475569", lineHeight: 18 },
+
+  // Action buttons
+  saveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#1E293B",
+    marginHorizontal: 16,
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 20,
+    elevation: 3,
+  },
+  saveBtnText: { color: "#FFF", fontWeight: "900", letterSpacing: 0.5 },
+  uploadAnotherBtn: { alignItems: "center", marginTop: 16, marginBottom: 8 },
+  uploadAnotherText: { color: "#8B5CF6", fontWeight: "700", fontSize: 14 },
 });

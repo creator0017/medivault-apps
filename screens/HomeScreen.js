@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
-import { collection, onSnapshot, orderBy, query, limit } from "firebase/firestore";
+import { collection, onSnapshot, orderBy, query, limit, getCountFromServer } from "firebase/firestore";
 import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
 import SideMenu from "../components/SideMenu";
+import TrendChart from "../components/TrendChart";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
 
@@ -38,9 +39,24 @@ export default function HomeScreen({ route, navigation }) {
     userData?.fullName?.split(" ")[0] ||
     route?.params?.fullName?.split(" ")[0] ||
     "User";
-  const healthScore = userData?.healthScore || 72;
 
   const [recentReports, setRecentReports] = useState([]);
+  const [aiAnalyses, setAiAnalyses] = useState([]);
+  const [totalReports, setTotalReports] = useState(null);
+
+  // Fetch AI analyses for TrendChart
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const q = query(
+      collection(db, "users", userData.uid, "aiAnalyses"),
+      orderBy("analyzedAt", "desc"),
+      limit(20)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setAiAnalyses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [userData?.uid]);
 
   // Fetch real reports from Firestore
   useEffect(() => {
@@ -69,6 +85,55 @@ export default function HomeScreen({ route, navigation }) {
     });
     return unsub;
   }, [userData?.uid]);
+
+  // Fetch total report count
+  useEffect(() => {
+    if (!userData?.uid) return;
+    getCountFromServer(collection(db, "users", userData.uid, "reports"))
+      .then((snap) => setTotalReports(snap.data().count))
+      .catch(() => {});
+  }, [userData?.uid, recentReports]);
+
+  // Derive real stats from AI analyses
+  const findMetric = (keywords) => {
+    for (const analysis of aiAnalyses) {
+      const found = analysis.metrics?.find((m) =>
+        keywords.some((k) => m.name?.toLowerCase().includes(k))
+      );
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const hba1cMetric = findMetric(["hba1c", "hb a1c", "glycated", "a1c"]);
+  const bpMetric = findMetric(["blood pressure", "systolic", "bp"]);
+  const medicationCount = userData?.clinical?.medications?.length ?? null;
+
+  const calcHealthScore = () => {
+    if (!aiAnalyses.length) return userData?.healthScore || null;
+    let total = 0, score = 0;
+    aiAnalyses.slice(0, 5).forEach((a) => {
+      a.metrics?.forEach((m) => {
+        total++;
+        if (m.status === "Normal") score += 100;
+        else if (m.status === "Borderline") score += 60;
+        else score += 20;
+      });
+    });
+    return total > 0 ? Math.round(score / total) : userData?.healthScore || null;
+  };
+
+  const healthScore = calcHealthScore();
+
+  const getAiInsight = () => {
+    const latest = aiAnalyses[0];
+    if (!latest) return "Upload a lab report to get your first AI health insight.";
+    const abnormal = latest.metrics?.filter((m) => m.status !== "Normal") || [];
+    if (abnormal.length === 0)
+      return `All metrics in your latest report look normal. Keep it up! 🎉`;
+    const names = abnormal.slice(0, 2).map((m) => m.name).join(", ");
+    return `${abnormal.length} metric${abnormal.length > 1 ? "s" : ""} need attention: ${names}. Tap to view details.`;
+  };
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -186,11 +251,13 @@ export default function HomeScreen({ route, navigation }) {
           onPress={() => navigation.navigate("Reports")} 
         >
           <View style={styles.scoreCircle}>
-            <Text style={styles.scoreNum}>{healthScore}/100</Text>
+            <Text style={styles.scoreNum}>{healthScore != null ? `${healthScore}/100` : "--"}</Text>
           </View>
           <View style={styles.scoreInfo}>
             <Text style={styles.scoreLabel}>Your Health Score</Text>
-            <Text style={styles.scoreDelta}>↑ Improved by 5 points! 🎉</Text>
+            <Text style={styles.scoreDelta}>
+              {healthScore != null ? (healthScore >= 80 ? "✅ Excellent" : healthScore >= 60 ? "⚠️ Needs attention" : "❗ Take action") : "Upload reports to calculate"}
+            </Text>
             <View style={styles.scoreLinkRow}>
               <Text style={styles.scoreLinkText}>View Detailed Analysis</Text>
               <MaterialCommunityIcons name="arrow-right" size={16} color="#2E75B6" />
@@ -200,25 +267,39 @@ export default function HomeScreen({ route, navigation }) {
 
         {/* --- QUICK STATS GRID --- */}
         <View style={styles.quickStatsRow}>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Reports")}>
+          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("AI")}>
             <Text style={styles.qsTitle}>Last HbA1c</Text>
-            <Text style={styles.qsValue}>6.8%</Text>
-            <Text style={[styles.qsStatus, { color: "#EF4444" }]}>⚠️ High</Text>
+            <Text style={styles.qsValue}>{hba1cMetric ? `${hba1cMetric.value}${hba1cMetric.unit || "%"}` : "--"}</Text>
+            {hba1cMetric && (
+              <Text style={[styles.qsStatus, { color: hba1cMetric.status === "Normal" ? "#10B981" : "#EF4444" }]}>
+                {hba1cMetric.status === "Normal" ? "✓ Normal" : `⚠️ ${hba1cMetric.status}`}
+              </Text>
+            )}
+            {!hba1cMetric && <Text style={styles.qsStatus}>No data yet</Text>}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Reports")}>
+          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("AI")}>
             <Text style={styles.qsTitle}>Last BP</Text>
-            <Text style={styles.qsValue}>130/85</Text>
-            <Text style={[styles.qsStatus, { color: "#10B981" }]}>✓ Normal</Text>
+            <Text style={styles.qsValue}>{bpMetric ? `${bpMetric.value}${bpMetric.unit || ""}` : "--"}</Text>
+            {bpMetric && (
+              <Text style={[styles.qsStatus, { color: bpMetric.status === "Normal" ? "#10B981" : "#EF4444" }]}>
+                {bpMetric.status === "Normal" ? "✓ Normal" : `⚠️ ${bpMetric.status}`}
+              </Text>
+            )}
+            {!bpMetric && <Text style={styles.qsStatus}>No data yet</Text>}
           </TouchableOpacity>
         </View>
         <View style={styles.quickStatsRow}>
-          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Reports")}>
+          <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Profile")}>
             <Text style={styles.qsTitle}>Medications</Text>
-            <Text style={styles.qsValueBlue}>3 Active</Text>
+            <Text style={styles.qsValueBlue}>
+              {medicationCount != null ? `${medicationCount} Active` : "Not set"}
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.quickStatBox} onPress={() => navigation.navigate("Reports")}>
             <Text style={styles.qsTitle}>Reports</Text>
-            <Text style={styles.qsValueBlue}>12 Total</Text>
+            <Text style={styles.qsValueBlue}>
+              {totalReports != null ? `${totalReports} Total` : `${recentReports.length}+`}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -228,9 +309,7 @@ export default function HomeScreen({ route, navigation }) {
             <MaterialCommunityIcons name="robot-outline" size={24} color="#8B5CF6" />
             <Text style={styles.aiTitle}>AI Health Insights</Text>
           </View>
-          <Text style={styles.aiDescription}>
-            "Your blood sugar has been stable this week. Great job! Keep taking medications on time."
-          </Text>
+          <Text style={styles.aiDescription}>"{getAiInsight()}"</Text>
           <View style={styles.aiLinkRow}>
             <Text style={styles.aiLinkText}>Ask AI a Question</Text>
             <MaterialCommunityIcons name="arrow-right" size={16} color="#8B5CF6" />
@@ -284,6 +363,17 @@ export default function HomeScreen({ route, navigation }) {
               <Text style={styles.viewAllCardText}>View All</Text>
           </TouchableOpacity>
         </ScrollView>
+
+        {/* --- HEALTH TREND CHART --- */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>HEALTH TRENDS</Text>
+          <TouchableOpacity onPress={() => navigation.navigate("AI", { reportUri: null })}>
+            <Text style={styles.viewAllText}>AI Analysis</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={{ paddingHorizontal: 20 }}>
+          <TrendChart reports={aiAnalyses} />
+        </View>
 
         {/* --- QUICK ACTIONS GRID --- */}
         <Text style={styles.sectionTitleAlt}>QUICK ACTIONS</Text>

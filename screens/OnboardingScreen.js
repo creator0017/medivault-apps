@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRef, useState } from "react";
+import { useUser } from "../context/UserContext";
 import {
   Image,
   SafeAreaView,
@@ -13,6 +14,15 @@ import PagerView from "react-native-pager-view";
 export default function OnboardingScreen({ navigation }) {
   const [activePage, setActivePage] = useState(0);
   const pagerRef = useRef(null);
+  const { userData } = useUser();
+
+  const handleSkip = () => {
+    if (userData?.phoneVerified) {
+      navigation.replace("Home");
+    } else {
+      navigation.replace("Login");
+    }
+  };
 
   const step1Img = require("../assets/images/step1.png");
   // Temporary fix: Pointing to step1.png because step3.png is corrupted and causing Android builds to fail
@@ -42,7 +52,7 @@ export default function OnboardingScreen({ navigation }) {
     <SafeAreaView style={styles.container}>
       <View style={styles.topBar}>
         {activePage < 2 ? (
-          <TouchableOpacity onPress={() => navigation.replace("Login")}>
+          <TouchableOpacity onPress={handleSkip}>
             <Text style={styles.skipText}>Skip</Text>
           </TouchableOpacity>
         ) : (
@@ -101,11 +111,20 @@ export default function OnboardingScreen({ navigation }) {
 
         {/* PAGE 3 */}
         <View style={styles.page} key="3">
-          <Image
-            source={step3Img}
-            style={styles.mainIllustration}
-            resizeMode="contain"
-          />
+          <View style={styles.lockScreenMock}>
+            <View style={styles.lockScreenTop}>
+              <Text style={styles.lockTime}>10:42</Text>
+              <MaterialCommunityIcons name="lock" size={18} color="#FFF" />
+            </View>
+            <View style={styles.emergencyCard}>
+              <View style={styles.emergencyAvatar} />
+              <View style={styles.emergencyInfo}>
+                <Text style={styles.emergencyLabel}>EMERGENCY ID</Text>
+                <Text style={styles.emergencyName}>Rajesh Kumar • B+</Text>
+              </View>
+              <MaterialCommunityIcons name="shield-check" size={28} color="#2E75B6" />
+            </View>
+          </View>
           <Text style={styles.stepTag}>SAFETY SHIELD</Text>
           <Text style={styles.title}>Always Prepared for Emergencies</Text>
           <Text style={styles.desc}>
@@ -143,7 +162,7 @@ export default function OnboardingScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FFF" },
-  topBar: { alignItems: "flex-end", paddingHorizontal: 20, paddingTop: 10 },
+  topBar: { alignItems: "flex-end", paddingHorizontal: 20, paddingTop: "5%" },
   skipText: { color: "#2E75B6", fontWeight: "bold", fontSize: 16 },
   pager: { flex: 1 },
   page: {
@@ -213,4 +232,46 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   nextBtnText: { color: "#FFF", fontWeight: "bold", fontSize: 18 },
+  lockScreenMock: {
+    width: 280,
+    height: 200,
+    backgroundColor: "#1a2535",
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 28,
+    justifyContent: "space-between",
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+  },
+  lockScreenTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  lockTime: { color: "#FFF", fontSize: 18, fontWeight: "700" },
+  emergencyCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
+  },
+  emergencyAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#E2E8F0",
+  },
+  emergencyInfo: { flex: 1 },
+  emergencyLabel: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "#EF4444",
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  emergencyName: { fontSize: 15, fontWeight: "700", color: "#1E293B" },
 });

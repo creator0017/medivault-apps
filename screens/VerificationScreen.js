@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import rnAuth from "@react-native-firebase/auth";
+import { FirebaseRecaptchaVerifierModal } from "expo-firebase-recaptcha";
+import { PhoneAuthProvider, linkWithCredential } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { useEffect, useRef, useState } from "react";
@@ -18,7 +19,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { db, functions } from "../firebaseConfig";
+import { app, auth, db, functions } from "../firebaseConfig";
 
 export default function VerificationScreen({ route, navigation }) {
   const { fullName, email, phone, patientId, uid } = route.params || {};
@@ -36,7 +37,7 @@ export default function VerificationScreen({ route, navigation }) {
 
   const [phoneOtp, setPhoneOtp] = useState(["", "", "", "", "", ""]);
   const [emailOtp, setEmailOtp] = useState(["", "", "", "", "", ""]);
-  const [confirmation, setConfirmation] = useState(null);
+  const [verificationId, setVerificationId] = useState(null);
 
   const [phoneTimer, setPhoneTimer] = useState(45);
   const [emailTimer, setEmailTimer] = useState(80);
@@ -47,6 +48,7 @@ export default function VerificationScreen({ route, navigation }) {
   const phoneRefs = useRef([]);
   const emailRefs = useRef([]);
   const autoSentRef = useRef(false);
+  const recaptchaVerifier = useRef(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -125,10 +127,10 @@ export default function VerificationScreen({ route, navigation }) {
         phoneNumber = "+91" + digits;
       }
 
-      // Uses @react-native-firebase/auth — no reCAPTCHA modal needed on Android
-      const confirmationResult = await rnAuth().signInWithPhoneNumber(phoneNumber);
+      const provider = new PhoneAuthProvider(auth);
+      const vid = await provider.verifyPhoneNumber(phoneNumber, recaptchaVerifier.current);
 
-      setConfirmation(confirmationResult);
+      setVerificationId(vid);
       setPhoneTimer(45);
       setPhoneOtp(["", "", "", "", "", ""]);
       setTimeout(() => phoneRefs.current[0]?.focus(), 100);
@@ -201,11 +203,23 @@ export default function VerificationScreen({ route, navigation }) {
 
     setIsLoading(true);
     try {
-      if (!confirmation)
+      if (!verificationId)
         throw new Error(
-          "Phone verification not initialized. Please click 'Send SMS' first.",
+          "Phone verification not initialized. Please wait for SMS to arrive.",
         );
-      await confirmation.confirm(phoneCode);
+      const credential = PhoneAuthProvider.credential(verificationId, phoneCode);
+      try {
+        await linkWithCredential(auth.currentUser, credential);
+      } catch (linkError) {
+        // If phone already linked to this account or another, still treat OTP as verified
+        if (
+          linkError.code !== "auth/provider-already-linked" &&
+          linkError.code !== "auth/credential-already-in-use" &&
+          linkError.code !== "auth/account-exists-with-different-credential"
+        ) {
+          throw linkError;
+        }
+      }
 
       const userDoc = await getDoc(doc(db, "users", uid));
       const userData = userDoc.data();
@@ -241,6 +255,11 @@ export default function VerificationScreen({ route, navigation }) {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <FirebaseRecaptchaVerifierModal
+        ref={recaptchaVerifier}
+        firebaseConfig={app.options}
+        attemptInvisibleVerification={false}
+      />
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{ flex: 1 }}

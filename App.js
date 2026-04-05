@@ -25,9 +25,9 @@ import FamilyScreen from "./screens/FamilyScreen";
 const Stack = createStackNavigator();
 
 function AppNavigator() {
-  const { user, loading } = useUser();
+  const { user, userData, loading } = useUser();
 
-  // Show a loading screen while Firebase checks if the user is already logged in
+  // Show a loading screen while Firebase checks auth state
   if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F8FAFC" }}>
@@ -44,7 +44,7 @@ function AppNavigator() {
           cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
         }}
       >
-        {!user ? (
+        {!user || !userData?.phoneVerified ? (
           // --- AUTH & ONBOARDING FLOW ---
           <>
             <Stack.Screen name="Splash" component={SplashScreen} />

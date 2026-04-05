@@ -65,19 +65,16 @@ export default function LoginScreen({ navigation }) {
       if (user && !isRepairing.current) {
         try {
           const userDoc = await getDoc(doc(db, "users", user.uid));
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            navigation.replace("Home", {
-              fullName: data.fullName,
-              patientId: data.patientId,
-            });
+          if (userDoc.exists() && userDoc.data().phoneVerified) {
+            // Verified user — App.js conditional nav will switch to Home automatically
+            // Don't call setIsCheckingAuth(false) so spinner shows until nav switches
             return;
           }
         } catch (error) {
           console.log("Auth check error:", error);
         }
       }
-      setIsCheckingAuth(false); // L-1: Done checking, show the form
+      setIsCheckingAuth(false);
     });
 
     return unsubscribe;
@@ -153,24 +150,25 @@ export default function LoginScreen({ navigation }) {
 
       if (userDoc.exists()) {
         const userData = userDoc.data();
-        navigation.replace("Home", {
-          fullName: userData.fullName,
-          patientId: userData.patientId,
-        });
+        if (userData.phoneVerified) {
+          // Verified user — keep loading spinner while App.js switches to Home
+          return;
+        } else {
+          navigation.replace("Verification", {
+            fullName: userData.fullName,
+            email: userData.email,
+            phone: userData.phone,
+            patientId: userData.patientId,
+            uid: user.uid,
+          });
+          return;
+        }
       } else {
         await auth.signOut();
         Alert.alert(
           "Account Incomplete",
           "Please sign up again to restore your profile.",
-          [
-            {
-              text: "Restore",
-              onPress: () => {
-                setMode("signup");
-                setEmail(cleanEmail);
-              },
-            },
-          ],
+          [{ text: "Restore", onPress: () => { setMode("signup"); setEmail(cleanEmail); } }],
         );
       }
     } catch (error) {

@@ -52,9 +52,13 @@ export default function SuccessScreen({ route, navigation }) {
         <TouchableOpacity
           style={styles.mainBtn}
           activeOpacity={0.8}
-          onPress={() =>
-            navigation.replace("Home", { fullName, patientId })
-          }
+          onPress={() => {
+            try {
+              navigation.replace("Home", { fullName, patientId });
+            } catch {
+              // App.js conditional nav will switch automatically once phoneVerified is set
+            }
+          }}
         >
           <Text style={styles.mainBtnText}>Go to Dashboard</Text>
           <MaterialCommunityIcons name="arrow-right" size={22} color="#FFF" />
