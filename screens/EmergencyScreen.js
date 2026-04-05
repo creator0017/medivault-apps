@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, updateDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
     Alert,
@@ -39,8 +39,96 @@ export default function EmergencyScreen({ navigation }) {
   const [allergies, setAllergies] = useState([]);
   const [medications, setMedications] = useState([]);
   const [contacts, setContacts] = useState([]);
+  const [aiSynced, setAiSynced] = useState(false); // true when data came from AI
 
-  // Load emergency data from Firestore in real-time
+  // ── Helper: merge AI analysis into emergency state ──────────────────────────
+  const applyAiAnalysis = (analysis, em, clinical) => {
+    // Age: manual > AI patient field > blank
+    const rawAge = String(analysis.age || "").replace(/\D.*/, "");
+    const resolvedAge = em.age || rawAge || "";
+
+    // Blood group: manual > AI field
+    const resolvedBloodGroup = em.bloodGroup || analysis.bloodGroup || "—";
+
+    setMedicalInfo((prev) => ({
+      ...prev,
+      bloodGroup: resolvedBloodGroup,
+      age: resolvedAge,
+    }));
+
+    // Conditions: manual always wins; otherwise build from AI
+    if ((em.conditions || []).length === 0) {
+      const aiConds = (analysis.conditions || []).map((c, i) => ({
+        id: `ai_cond_${i}`,
+        title: c.title || c.name || "Condition",
+        subtitle: c.subtitle || c.description || "",
+        history: c.history || "Detected from uploaded lab report",
+        type: "chart-line",
+      }));
+
+      // Fallback: derive conditions from abnormal metrics
+      if (aiConds.length === 0) {
+        (analysis.metrics || [])
+          .filter((m) => {
+            const s = String(m.status || "").toLowerCase();
+            return s === "high" || s === "borderline" || s === "abnormal" || s === "low";
+          })
+          .slice(0, 5)
+          .forEach((m, i) => {
+            aiConds.push({
+              id: `ai_m_${i}`,
+              title: m.name,
+              subtitle: `Value: ${m.value} ${m.unit || ""} | Normal: ${m.normalRange || "N/A"}`,
+              history: String(m.status).toLowerCase() === "high" ? "Abnormal — consult your doctor" : "Borderline — monitor closely",
+              type: "chart-line",
+            });
+          });
+      }
+      if (aiConds.length > 0) setConditions(aiConds);
+    }
+
+    // Medications: manual > AI > clinical text
+    if ((em.medications || []).length === 0) {
+      const aiMeds = (analysis.medications || []).map((med, i) => ({
+        id: `ai_med_${i}`,
+        name: typeof med === "string" ? med : med.name || String(med),
+        dose: med?.dose || med?.dosage || "As prescribed",
+      })).filter((m) => m.name);
+
+      if (aiMeds.length > 0) {
+        setMedications(aiMeds);
+      } else if (clinical.meds) {
+        setMedications(
+          clinical.meds.split(",").map((m, i) => ({
+            id: `cm_${i}`, name: m.trim(), dose: "As prescribed",
+          })).filter((m) => m.name)
+        );
+      }
+    }
+
+    // Allergies: manual > AI > clinical text
+    if ((em.allergies || []).length === 0) {
+      const aiAllergies = (analysis.allergies || []).map((a, i) => ({
+        id: `ai_alg_${i}`,
+        name: typeof a === "string" ? a : a.name || String(a),
+        severity: a?.severity || "Check with doctor",
+      })).filter((a) => a.name);
+
+      if (aiAllergies.length > 0) {
+        setAllergies(aiAllergies);
+      } else if (clinical.allergies) {
+        setAllergies(
+          clinical.allergies.split(",").map((a, i) => ({
+            id: `c_${i}`, name: a.trim(), severity: "Check with doctor",
+          })).filter((a) => a.name)
+        );
+      }
+    }
+
+    setAiSynced(true);
+  };
+
+  // ── Load user doc (manual emergency fields) ─────────────────────────────────
   useEffect(() => {
     if (!userData?.uid) return;
     const unsub = onSnapshot(doc(db, "users", userData.uid), (snap) => {
@@ -48,61 +136,45 @@ export default function EmergencyScreen({ navigation }) {
       const d = snap.data();
       const em = d.emergency || {};
       const clinical = d.clinical || {};
-      const hs = d.healthSummary || {};
-
-      // Age: manual > AI-extracted from report > blank
-      const resolvedAge = em.age || em.autoAge || "";
-      // Blood group: manual > AI-extracted > default
-      const resolvedBloodGroup = em.bloodGroup || em.autoBloodGroup || "—";
 
       setMedicalInfo({
         name: d.fullName || "User",
-        bloodGroup: resolvedBloodGroup,
-        age: resolvedAge,
+        bloodGroup: em.bloodGroup || "—",
+        age: em.age || "",
         weight: em.weight || "",
         patientId: d.patientId || "MV-000000",
         emergencyPin: em.emergencyPin || "1234",
       });
 
-      // Conditions: manual > AI-extracted from report > empty
-      const manualConditions = em.conditions || [];
-      const autoConditions = em.autoConditions || [];
-      setConditions(manualConditions.length > 0 ? manualConditions : autoConditions);
-
-      // Allergies: manual > AI-extracted > clinical text > empty
-      if (em.allergies?.length > 0) {
-        setAllergies(em.allergies);
-      } else if (em.autoAllergies?.length > 0) {
-        setAllergies(em.autoAllergies);
-      } else if (clinical.allergies) {
-        setAllergies(
-          clinical.allergies.split(",").map((a, i) => ({
-            id: `c_${i}`, name: a.trim(), severity: "Check with doctor",
-          })).filter((a) => a.name)
-        );
-      } else {
-        setAllergies([]);
-      }
-
-      // Medications: manual > AI-extracted > clinical text > empty
-      if (em.medications?.length > 0) {
-        setMedications(em.medications);
-      } else if (em.autoMedications?.length > 0) {
-        setMedications(em.autoMedications);
-      } else if (clinical.meds) {
-        setMedications(
-          clinical.meds.split(",").map((m, i) => ({
-            id: `cm_${i}`, name: m.trim(), dose: "As prescribed",
-          })).filter((m) => m.name)
-        );
-      } else {
-        setMedications([]);
-      }
-
+      // Use manual conditions if set
+      if ((em.conditions || []).length > 0) setConditions(em.conditions);
+      if ((em.medications || []).length > 0) setMedications(em.medications);
+      if ((em.allergies || []).length > 0) setAllergies(em.allergies);
       setContacts(em.contacts || []);
+
+      // Now fetch latest AI analysis to fill any empty fields
+      fetchLatestAiAnalysis(em, clinical);
     });
     return unsub;
   }, [userData?.uid]);
+
+  // ── Fetch latest AI analysis and auto-fill empty fields ─────────────────────
+  const fetchLatestAiAnalysis = async (em, clinical) => {
+    if (!userData?.uid) return;
+    try {
+      const q = query(
+        collection(db, "users", userData.uid, "aiAnalyses"),
+        orderBy("analyzedAt", "desc"),
+        limit(1)
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) return;
+      const latest = snap.docs[0].data();
+      applyAiAnalysis(latest, em, clinical);
+    } catch (e) {
+      console.log("AI analysis fetch error:", e);
+    }
+  };
 
   // Persist emergency data to Firestore
   const saveToFirestore = async (updatedInfo, updatedConditions) => {
@@ -215,12 +287,11 @@ export default function EmergencyScreen({ navigation }) {
         showsVerticalScrollIndicator={false}
       >
         {/* --- AI AUTO-FILL BANNER --- */}
-        {(conditions.some((c) => c.id?.startsWith("ai_")) ||
-          medicalInfo.age) && (
+        {aiSynced && (
           <View style={styles.aiBanner}>
             <MaterialCommunityIcons name="robot-outline" size={16} color="#8B5CF6" />
             <Text style={styles.aiBannerText}>
-              Data auto-filled from your uploaded reports. Tap ⚙️ to edit manually.
+              Auto-filled from your latest AI report scan. Tap ⚙️ to edit or correct any field.
             </Text>
           </View>
         )}

@@ -249,18 +249,12 @@ export default function AIDashboard() {
         severity: a.severity || "Check with doctor",
       }));
 
-      // ── Build update payload — only overwrite fields that are currently empty ──
-      const emergencyUpdate = {};
-      if (aiConditions.length > 0) {
-        emergencyUpdate["emergency.autoConditions"] = aiConditions;
-      }
-      if (aiMedications.length > 0) {
-        emergencyUpdate["emergency.autoMedications"] = aiMedications;
-      }
-      if (aiAllergies.length > 0) {
-        emergencyUpdate["emergency.autoAllergies"] = aiAllergies;
-      }
-      // Age and blood group — only set if not already manually set
+      // ── Always write AI data — Emergency screen reads latest aiAnalyses directly ──
+      const emergencyUpdate = {
+        "emergency.autoConditions": aiConditions,
+        "emergency.autoMedications": aiMedications,
+        "emergency.autoAllergies": aiAllergies,
+      };
       if (analysis.age) emergencyUpdate["emergency.autoAge"] = String(analysis.age).replace(/\D.*/, "");
       if (analysis.bloodGroup) emergencyUpdate["emergency.autoBloodGroup"] = analysis.bloodGroup;
       if (analysis.gender) emergencyUpdate["emergency.autoGender"] = analysis.gender;
