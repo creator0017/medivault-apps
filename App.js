@@ -21,6 +21,7 @@ import SuccessScreen from "./screens/SuccessScreen";
 import UploadReportScreen from "./screens/UploadReportScreen";
 import VerificationScreen from "./screens/VerificationScreen";
 import FamilyScreen from "./screens/FamilyScreen";
+import ReportViewerScreen from "./screens/ReportViewerScreen";
 
 const Stack = createStackNavigator();
 
@@ -69,6 +70,7 @@ function AppNavigator() {
             <Stack.Screen name="Emergency" component={EmergencyScreen} />
             <Stack.Screen name="Reports" component={ReportsScreen} />
             <Stack.Screen name="UploadReport" component={UploadReportScreen} />
+            <Stack.Screen name="ReportViewer" component={ReportViewerScreen} />
           </>
         )}
       </Stack.Navigator>

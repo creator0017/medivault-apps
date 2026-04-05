@@ -1,10 +1,11 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, orderBy, query } from "firebase/firestore";
+import { deleteObject, ref } from "firebase/storage";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
-  Linking,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -13,7 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
 import { useUser } from "../context/UserContext";
-import { db } from "../firebaseConfig";
+import { db, storage } from "../firebaseConfig";
 
 export default function ReportsScreen({ navigation }) {
   const { userData } = useUser();
@@ -22,10 +23,7 @@ export default function ReportsScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!userData?.uid) {
-      setLoading(false);
-      return;
-    }
+    if (!userData?.uid) { setLoading(false); return; }
 
     const q = query(
       collection(db, "users", userData.uid, "reports"),
@@ -33,41 +31,33 @@ export default function ReportsScreen({ navigation }) {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const records = snapshot.docs.map((doc) => {
-        const data = doc.data();
+      setReports(snapshot.docs.map((d) => {
+        const data = d.data();
         const dateObj = data.uploadedAt ? data.uploadedAt.toDate() : new Date();
         const dateStr = dateObj.toLocaleDateString("en-GB", {
-          day: "numeric",
-          month: "short",
-          year: "numeric",
+          day: "numeric", month: "short", year: "numeric",
         }).toUpperCase();
-
         const isPdf = data.type === "PDF" || data.url?.includes(".pdf");
-
         return {
-          id: doc.id,
+          id: d.id,
           title: data.title || "Medical Report",
           date: dateStr,
           type: isPdf ? "Prescription" : "Lab",
           color: isPdf ? "#FEF3C7" : "#DBEAFE",
           icon: isPdf ? "pill" : "water",
           url: data.url,
+          storagePath: data.storagePath || null,
+          fileType: data.type,
         };
-      });
-      setReports(records);
+      }));
       setLoading(false);
-    }, (error) => {
-      console.log("Error fetching reports:", error);
-      setLoading(false);
-    });
+    }, () => setLoading(false));
 
     return () => unsubscribe();
   }, [userData]);
 
   const filteredReports =
-    activeFilter === "All"
-      ? reports
-      : reports.filter((r) => r.type === activeFilter);
+    activeFilter === "All" ? reports : reports.filter((r) => r.type === activeFilter);
 
   const TABS = [
     { label: "All Reports", filter: "All" },
@@ -75,12 +65,36 @@ export default function ReportsScreen({ navigation }) {
     { label: "Lab Results", filter: "Lab" },
   ];
 
-  const handleOpenReport = (url) => {
-    if (url) {
-      Linking.openURL(url).catch((err) =>
-        console.error("Couldn't load page", err)
-      );
-    }
+  const handleOpenReport = (item) => {
+    navigation.navigate("ReportViewer", {
+      url: item.url,
+      title: item.title,
+      type: item.fileType,
+    });
+  };
+
+  const handleDelete = (item) => {
+    Alert.alert(
+      "Delete Report",
+      `Delete "${item.title}"? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, "users", userData.uid, "reports", item.id));
+              if (item.storagePath) {
+                await deleteObject(ref(storage, item.storagePath)).catch(() => {});
+              }
+            } catch {
+              Alert.alert("Error", "Could not delete report.");
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -92,28 +106,15 @@ export default function ReportsScreen({ navigation }) {
         </TouchableOpacity>
         <Text style={styles.headerTitle}>MY VAULT</Text>
         <TouchableOpacity onPress={() => navigation.navigate("UploadReport")}>
-          <MaterialCommunityIcons
-            name="plus-circle-outline"
-            size={28}
-            color="#2E75B6"
-          />
+          <MaterialCommunityIcons name="plus-circle-outline" size={28} color="#2E75B6" />
         </TouchableOpacity>
       </View>
 
-      {/* M-6 Fix: Functional filter tabs */}
+      {/* Filter tabs */}
       <View style={styles.tabContainer}>
         {TABS.map((tab) => (
-          <TouchableOpacity
-            key={tab.filter}
-            onPress={() => setActiveFilter(tab.filter)}
-          >
-            <Text
-              style={
-                activeFilter === tab.filter
-                  ? styles.tabActive
-                  : styles.tabInactive
-              }
-            >
+          <TouchableOpacity key={tab.filter} onPress={() => setActiveFilter(tab.filter)}>
+            <Text style={activeFilter === tab.filter ? styles.tabActive : styles.tabInactive}>
               {tab.label}
             </Text>
           </TouchableOpacity>
@@ -132,46 +133,36 @@ export default function ReportsScreen({ navigation }) {
           keyExtractor={(item) => item.id}
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <MaterialCommunityIcons
-                name="file-document-outline"
-                size={50}
-                color="#CBD5E1"
-              />
+              <MaterialCommunityIcons name="file-document-outline" size={50} color="#CBD5E1" />
               <Text style={styles.emptyText}>
-                No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""}{" "}
-                reports found
+                No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""} reports found
               </Text>
             </View>
           }
           renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={styles.reportCard} 
-              onPress={() => handleOpenReport(item.url)}
+            <TouchableOpacity
+              style={styles.reportCard}
+              onPress={() => handleOpenReport(item)}
             >
               <View style={[styles.iconBox, { backgroundColor: item.color }]}>
-                <MaterialCommunityIcons
-                  name={item.icon}
-                  size={24}
-                  color="#1E293B"
-                />
+                <MaterialCommunityIcons name={item.icon} size={24} color="#1E293B" />
               </View>
               <View style={{ flex: 1, marginLeft: 15 }}>
                 <Text style={styles.reportTitle}>{item.title}</Text>
-                <Text style={styles.reportDate}>
-                  {item.date} • {item.type}
-                </Text>
+                <Text style={styles.reportDate}>{item.date} • {item.type}</Text>
               </View>
-              <MaterialCommunityIcons
-                name="chevron-right"
-                size={24}
-                color="#CBD5E1"
-              />
+              <TouchableOpacity
+                onPress={() => handleDelete(item)}
+                style={styles.deleteBtn}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#EF4444" />
+              </TouchableOpacity>
             </TouchableOpacity>
           )}
         />
       )}
 
-      {/* M-4 Fix: Shared BottomTabBar */}
       <BottomTabBar navigation={navigation} activeTab="Reports" />
     </SafeAreaView>
   );
@@ -188,18 +179,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
   },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: "900",
-    color: "#1E293B",
-    letterSpacing: 1,
-  },
-  tabContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    marginTop: 15,
-    gap: 10,
-  },
+  headerTitle: { fontSize: 16, fontWeight: "900", color: "#1E293B", letterSpacing: 1 },
+  tabContainer: { flexDirection: "row", paddingHorizontal: 20, marginTop: 15, gap: 10 },
   tabActive: {
     backgroundColor: "#2E75B6",
     color: "#FFF",
@@ -210,13 +191,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     overflow: "hidden",
   },
-  tabInactive: {
-    color: "#64748B",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 12,
-    fontWeight: "bold",
-  },
+  tabInactive: { color: "#64748B", paddingHorizontal: 10, paddingVertical: 8, fontSize: 12, fontWeight: "bold" },
   reportCard: {
     backgroundColor: "#FFF",
     padding: 15,
@@ -229,39 +204,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 10,
   },
-  iconBox: {
-    width: 50,
-    height: 50,
-    borderRadius: 15,
-    justifyContent: "center",
-    alignItems: "center",
-  },
+  iconBox: { width: 50, height: 50, borderRadius: 15, justifyContent: "center", alignItems: "center" },
   reportTitle: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
-  reportDate: {
-    fontSize: 11,
-    color: "#94A3B8",
-    marginTop: 3,
-    fontWeight: "600",
-  },
-  emptyState: {
-    alignItems: "center",
-    paddingTop: 60,
-  },
-  emptyText: {
-    color: "#94A3B8",
-    fontSize: 14,
-    fontWeight: "600",
-    marginTop: 15,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  loadingText: {
-    marginTop: 10,
-    color: "#64748B",
-    fontSize: 16,
-    fontWeight: "600",
-  },
+  reportDate: { fontSize: 11, color: "#94A3B8", marginTop: 3, fontWeight: "600" },
+  deleteBtn: { padding: 6 },
+  emptyState: { alignItems: "center", paddingTop: 60 },
+  emptyText: { color: "#94A3B8", fontSize: 14, fontWeight: "600", marginTop: 15 },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loadingText: { marginTop: 10, color: "#64748B", fontSize: 16, fontWeight: "600" },
 });
