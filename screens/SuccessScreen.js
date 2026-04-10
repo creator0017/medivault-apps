@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -37,7 +37,7 @@ export default function SuccessScreen({ route, navigation }) {
           <Text style={styles.tag}>REGISTRATION SUCCESSFUL</Text>
           <Text style={styles.title}>You're all set!</Text>
           <Text style={styles.subtitle}>
-            Welcome to <Text style={styles.brandText}>MediVault</Text>
+            Welcome to <Text style={styles.brandText}>Arogyasathi</Text>
             {fullName ? `, ${fullName.split(" ")[0]}` : ""}
           </Text>
         </View>

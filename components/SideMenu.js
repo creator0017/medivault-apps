@@ -95,7 +95,7 @@ export default function SideMenu({ visible, onClose, navigation }) {
             </View>
             <View>
               <Text style={styles.userName}>
-                {userData?.fullName || "MediVault User"}
+                {userData?.fullName || "Arogyasathi User"}
               </Text>
               <Text style={styles.userId}>
                 Patient ID: {userData?.patientId || "---"}

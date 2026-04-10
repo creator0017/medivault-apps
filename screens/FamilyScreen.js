@@ -124,7 +124,7 @@ export default function FamilyScreen({ navigation }) {
         query(collection(db, "publicProfiles"), where("patientId", "==", trimmed))
       );
       if (snap.empty) {
-        Alert.alert("Not Found", "No MediVault user found with Patient ID: " + trimmed);
+        Alert.alert("Not Found", "No Arogyasathi user found with Patient ID: " + trimmed);
       } else {
         const data = snap.docs[0].data();
         // Check if request already exists

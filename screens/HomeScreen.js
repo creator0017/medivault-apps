@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { Audio } from "expo-av";
+import { requestRecordingPermissionsAsync, setAudioModeAsync, RecordingPresets, AudioModule } from 'expo-audio';
 import { collection, onSnapshot, orderBy, query, limit, getCountFromServer } from "firebase/firestore";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useTheme } from "../context/ThemeContext";
 import {
   Alert,
@@ -37,6 +37,7 @@ export default function HomeScreen({ route, navigation }) {
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [greeting, setGreeting] = useState(computeGreeting());
+  const recorderRef = useRef(null);
 
   // Update greeting every minute so it matches current time
   useEffect(() => {
@@ -117,16 +118,19 @@ export default function HomeScreen({ route, navigation }) {
 
   const hba1cMetric = findMetric(["hba1c", "hb a1c", "glycated", "a1c"]);
   const bpMetric = findMetric(["blood pressure", "systolic", "bp"]);
-  const medicationCount = userData?.clinical?.medications?.length ?? null;
+  const medicationCount = userData?.clinical?.meds
+    ? userData.clinical.meds.split(",").filter((s) => s.trim().length > 0).length
+    : null;
 
   const calcHealthScore = () => {
     if (!aiAnalyses.length) return userData?.healthScore || null;
     let total = 0, score = 0;
     aiAnalyses.slice(0, 5).forEach((a) => {
       a.metrics?.forEach((m) => {
+        const s = String(m.status || "").toLowerCase();
         total++;
-        if (m.status === "Normal") score += 100;
-        else if (m.status === "Borderline") score += 60;
+        if (s === "normal") score += 100;
+        else if (s === "borderline") score += 60;
         else score += 20;
       });
     });
@@ -152,16 +156,16 @@ export default function HomeScreen({ route, navigation }) {
 
   async function startRecording() {
     try {
-      const permission = await Audio.requestPermissionsAsync();
+      const permission = await requestRecordingPermissionsAsync();
       if (permission.status === "granted") {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
         });
-        const { recording: newRecording } = await Audio.Recording.createAsync(
-          Audio.RecordingOptionsPresets.HIGH_QUALITY,
-        );
-        setRecording(newRecording);
+        const recorder = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        recorderRef.current = recorder;
         setIsRecording(true);
       } else {
         Alert.alert("Permission Denied", "Please allow microphone access.");
@@ -172,10 +176,10 @@ export default function HomeScreen({ route, navigation }) {
   }
 
   async function stopRecording() {
-    if (!recording) return;
+    if (!recorderRef.current) return;
     try {
       setIsRecording(false);
-      await recording.stopAndUnloadAsync();
+      await recorderRef.current.stop();
       const newVoiceReport = {
         id: Date.now().toString(),
         title: "Voice Report",
@@ -185,6 +189,7 @@ export default function HomeScreen({ route, navigation }) {
         iconColor: "#D97706",
       };
       setRecentReports([newVoiceReport, ...recentReports]);
+      recorderRef.current = null;
       setRecording(null);
       Alert.alert("Saved", "Voice report added to your list.");
     } catch (error) {
@@ -254,23 +259,40 @@ export default function HomeScreen({ route, navigation }) {
         </TouchableOpacity>
 
         {/* --- HEALTH SCORE CARD --- */}
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.scoreCard}
           activeOpacity={0.9}
-          onPress={() => navigation.navigate("Reports")} 
+          onPress={() => navigation.navigate("HealthDashboard")}
         >
-          <View style={styles.scoreCircle}>
+          <View style={[
+            styles.scoreCircle,
+            healthScore != null && healthScore >= 80 && { borderTopColor: "#10B981", borderRightColor: "#10B981" },
+            healthScore != null && healthScore >= 60 && healthScore < 80 && { borderTopColor: "#F59E0B", borderRightColor: "#F59E0B" },
+            healthScore != null && healthScore < 60 && { borderTopColor: "#EF4444", borderRightColor: "#EF4444" },
+          ]}>
             <Text style={styles.scoreNum}>{healthScore != null ? `${healthScore}/100` : "--"}</Text>
           </View>
           <View style={styles.scoreInfo}>
             <Text style={styles.scoreLabel}>Your Health Score</Text>
-            <Text style={styles.scoreDelta}>
-              {healthScore != null ? (healthScore >= 80 ? "✅ Excellent" : healthScore >= 60 ? "⚠️ Needs attention" : "❗ Take action") : "Upload reports to calculate"}
+            <Text style={[
+              styles.scoreDelta,
+              healthScore != null && healthScore >= 80 && { color: "#10B981" },
+              healthScore != null && healthScore >= 60 && healthScore < 80 && { color: "#F59E0B" },
+              healthScore != null && healthScore < 60 && { color: "#EF4444" },
+            ]}>
+              {healthScore != null
+                ? healthScore >= 80 ? "✅ Excellent"
+                : healthScore >= 60 ? "⚠️ Needs attention"
+                : "❗ Take action"
+                : "Upload reports to calculate"}
             </Text>
             <View style={styles.scoreLinkRow}>
-              <Text style={styles.scoreLinkText}>View Detailed Analysis</Text>
-              <MaterialCommunityIcons name="arrow-right" size={16} color="#2E75B6" />
+              <Text style={styles.scoreLinkText}>View Full Dashboard</Text>
+              <MaterialCommunityIcons name="arrow-right" size={16} color="#7C3AED" />
             </View>
+          </View>
+          <View style={styles.dashBadge}>
+            <MaterialCommunityIcons name="chart-arc" size={18} color="#7C3AED" />
           </View>
         </TouchableOpacity>
 
@@ -538,7 +560,15 @@ const styles = StyleSheet.create({
   scoreLabel: { fontSize: 16, fontWeight: "800", color: "#1E293B" },
   scoreDelta: { color: "#10B981", fontSize: 13, fontWeight: "700", marginTop: 4 },
   scoreLinkRow: { flexDirection: "row", alignItems: "center", marginTop: 8 },
-  scoreLinkText: { color: "#2E75B6", fontSize: 12, fontWeight: "700", marginRight: 4 },
+  scoreLinkText: { color: "#7C3AED", fontSize: 12, fontWeight: "700", marginRight: 4 },
+  dashBadge: {
+    position: "absolute",
+    top: 12,
+    right: 14,
+    backgroundColor: "#EDE9FE",
+    borderRadius: 20,
+    padding: 6,
+  },
   
   quickStatsRow: {
     flexDirection: "row",

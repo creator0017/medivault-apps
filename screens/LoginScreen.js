@@ -12,6 +12,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -271,10 +272,8 @@ export default function LoginScreen({ navigation }) {
   if (isCheckingAuth) {
     return (
       <SafeAreaView style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
-        <View style={styles.iconCircleLarge}>
-          <MaterialCommunityIcons name="shield-check" size={50} color="#FFF" />
-        </View>
-        <Text style={[styles.brandText, { marginTop: 16 }]}>MediVault</Text>
+        <Image source={require("../assets/images/logo.png")} style={styles.logoImage} resizeMode="contain" />
+        <Text style={[styles.brandText, { marginTop: 8 }]}>Arogyasathi</Text>
         <ActivityIndicator size="large" color="#2E75B6" style={{ marginTop: 30 }} />
         <Text style={{ color: "#64748B", marginTop: 12, fontWeight: "500" }}>
           Checking your session...
@@ -379,14 +378,8 @@ export default function LoginScreen({ navigation }) {
               { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
             ]}
           >
-            <View style={styles.iconCircleLarge}>
-              <MaterialCommunityIcons
-                name="shield-check"
-                size={50}
-                color="#FFF"
-              />
-            </View>
-            <Text style={styles.brandText}>MediVault</Text>
+            <Image source={require("../assets/images/logo.png")} style={styles.logoImage} resizeMode="contain" />
+            <Text style={styles.brandText}>Arogyasathi</Text>
             <Text style={styles.tagline}>Secure Health Records</Text>
           </Animated.View>
 
@@ -601,15 +594,10 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   logoContainer: { alignItems: "center", marginBottom: 40 },
-  iconCircleLarge: {
-    width: 100,
-    height: 100,
-    borderRadius: 30,
-    backgroundColor: "#2E75B6",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 16,
-    elevation: 10,
+  logoImage: {
+    width: 110,
+    height: 110,
+    marginBottom: 8,
   },
   brandText: {
     fontSize: 32,

@@ -153,9 +153,9 @@ export default function UploadReportScreen({ navigation }) {
         setUploadProgress(Math.round(((i + 1) / files.length) * 100));
       }
 
-      // Find the first image to offer AI analysis
-      const firstImage = files.find((f) => f.isImage);
-      if (firstImage) {
+      // Offer AI analysis for any file (image or PDF)
+      const firstAnalyzable = files.find((f) => f.isImage || f.mime?.includes("pdf"));
+      if (firstAnalyzable) {
         Alert.alert(
           "Upload Complete",
           `${files.length} file${files.length > 1 ? "s" : ""} saved. Analyze with AI to extract health data automatically?`,
@@ -164,14 +164,14 @@ export default function UploadReportScreen({ navigation }) {
             {
               text: "Analyze with AI",
               onPress: () =>
-                navigation.navigate("AI", { reportUri: firstImage.uri }),
+                navigation.navigate("AI", { reportUri: firstAnalyzable.uri, reportMime: firstAnalyzable.mime }),
             },
           ]
         );
       } else {
         Alert.alert(
           "Uploaded",
-          `${files.length} PDF${files.length > 1 ? "s" : ""} saved. Open a report to view it.`,
+          `${files.length} file${files.length > 1 ? "s" : ""} saved.`,
           [{ text: "OK", onPress: () => navigation.navigate("Reports") }]
         );
       }

@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { SafeAreaView } from "react-native-safe-area-context";
 import BottomTabBar from "../components/BottomTabBar";
@@ -165,11 +165,11 @@ export default function ReportsScreen({ navigation }) {
                 <Text style={styles.reportDate}>{item.date} • {item.type}</Text>
               </View>
               <View style={styles.cardActions}>
-                {/* AI analyze — only for images */}
-                {item.fileType === "Image" && (
+                {/* AI analyze — for images and PDFs */}
+                {(item.fileType === "Image" || item.fileType === "PDF") && (
                   <TouchableOpacity
                     style={styles.aiBtn}
-                    onPress={() => navigation.navigate("AI", { reportUri: item.url })}
+                    onPress={() => navigation.navigate("AI", { reportUri: item.url, reportMime: item.fileType === "PDF" ? "application/pdf" : "image/jpeg" })}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <MaterialCommunityIcons name="robot-outline" size={20} color="#8B5CF6" />

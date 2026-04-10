@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
@@ -29,7 +29,7 @@ export default function ReportViewerScreen({ route, navigation }) {
       const { uri } = await FileSystem.downloadAsync(url, localUri);
       await Sharing.shareAsync(uri, {
         mimeType: type === "PDF" ? "application/pdf" : "image/jpeg",
-        dialogTitle: title || "MediVault Report",
+        dialogTitle: title || "Arogyasathi Report",
       });
     } catch {
       Alert.alert("Error", "Could not download this file.");

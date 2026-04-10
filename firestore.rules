@@ -20,6 +20,21 @@ service cloud.firestore {
         allow read: if request.auth != null
           && request.auth.uid in get(/databases/$(database)/documents/users/$(userId)).data.get("authorizedViewers", []);
       }
+
+      // Emergency card — owner only
+      match /emergencyCard/{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Health reports — owner only
+      match /healthReports/{reportId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Access logs — owner only
+      match /accessLogs/{logId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
     // ─── PUBLIC PROFILES (for family member search) ────────────────────────
@@ -40,6 +55,12 @@ service cloud.firestore {
       allow delete: if request.auth != null
                     && (resource.data.fromUid == request.auth.uid
                         || resource.data.toUid == request.auth.uid);
+    }
+
+    // ─── EMERGENCY SHARES ──────────────────────────────────────────────────
+    match /emergencyShares/{shareId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.resource.data.userId == request.auth.uid;
     }
 
     // ─── DENY EVERYTHING ELSE ──────────────────────────────────────────────

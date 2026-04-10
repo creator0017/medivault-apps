@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "medivault-final",
+    "name": "Arogyasathi",
     "slug": "medivault-final",
     "version": "1.0.0",
     "scheme": "medivault",
@@ -35,7 +35,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "extra": {
       "eas": {

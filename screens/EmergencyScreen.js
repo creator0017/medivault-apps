@@ -3,12 +3,12 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, updateDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
     Alert,
     Dimensions,
     Linking,
     Platform,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
@@ -19,11 +19,13 @@ import QRCode from "react-native-qrcode-svg";
 import EditModal from "../components/EditModal";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
+import { useEmergencyCard } from "../hooks/useEmergencyCard";
 
 const { width } = Dimensions.get("window");
 
 export default function EmergencyScreen({ navigation }) {
   const { userData } = useUser();
+  const { shareUrl, cardData: secureCardData } = useEmergencyCard(userData?.uid);
   const [isEditing, setIsEditing] = useState(false);
 
   const [medicalInfo, setMedicalInfo] = useState({
@@ -45,10 +47,13 @@ export default function EmergencyScreen({ navigation }) {
   const applyAiAnalysis = (analysis, em, clinical) => {
     // Age: manual > AI patient field > blank
     const rawAge = String(analysis.age || "").replace(/\D.*/, "");
-    const resolvedAge = em.age || rawAge || "";
+    const resolvedAge = (em.age && em.age !== "—") ? em.age : (rawAge || "");
 
-    // Blood group: manual > AI field
-    const resolvedBloodGroup = em.bloodGroup || analysis.bloodGroup || "—";
+    // Blood group: manual > AI field ("—" default is not a real value)
+    const resolvedBloodGroup =
+      (em.bloodGroup && em.bloodGroup !== "—")
+        ? em.bloodGroup
+        : (analysis.bloodGroup || "—");
 
     setMedicalInfo((prev) => ({
       ...prev,
@@ -177,7 +182,13 @@ export default function EmergencyScreen({ navigation }) {
   };
 
   // Persist emergency data to Firestore
-  const saveToFirestore = async (updatedInfo, updatedConditions) => {
+  const saveToFirestore = async (
+    updatedInfo,
+    updatedConditions,
+    updatedMedications,
+    updatedAllergies,
+    updatedContacts,
+  ) => {
     if (!userData?.uid) return;
     try {
       await updateDoc(doc(db, "users", userData.uid), {
@@ -185,7 +196,10 @@ export default function EmergencyScreen({ navigation }) {
         "emergency.age": updatedInfo.age,
         "emergency.weight": updatedInfo.weight,
         "emergency.emergencyPin": updatedInfo.emergencyPin,
-        "emergency.conditions": updatedConditions,
+        "emergency.conditions": updatedConditions ?? conditions,
+        "emergency.medications": updatedMedications ?? medications,
+        "emergency.allergies": updatedAllergies ?? allergies,
+        "emergency.contacts": updatedContacts ?? contacts,
       });
     } catch (e) {
       Alert.alert("Save Error", "Could not save changes.");
@@ -200,6 +214,59 @@ export default function EmergencyScreen({ navigation }) {
     target: null,
     initialValue: "",
   });
+
+  // ── Add item modal ───────────────────────────────────────────────────────────
+  const [addModal, setAddModal] = useState({ visible: false, type: "", step: 1, partial: {} });
+
+  const openAddModal = (type) => setAddModal({ visible: true, type, step: 1, partial: {} });
+
+  const handleAddSave = (value) => {
+    if (addModal.type === "medication") {
+      // Format: "Name — Dose" or just "Name"
+      const parts = value.split(/[—\-–]/);
+      const name = parts[0].trim();
+      const dose = parts[1] ? parts[1].trim() : "As prescribed";
+      if (!name) { setAddModal({ ...addModal, visible: false }); return; }
+      const newMeds = [...medications, { id: `med_${Date.now()}`, name, dose }];
+      setMedications(newMeds);
+      saveToFirestore(medicalInfo, conditions, newMeds, allergies, contacts);
+    } else if (addModal.type === "allergy") {
+      if (!value.trim()) { setAddModal({ ...addModal, visible: false }); return; }
+      const newAllergies = [...allergies, { id: `alg_${Date.now()}`, name: value.trim(), severity: "Check with doctor" }];
+      setAllergies(newAllergies);
+      saveToFirestore(medicalInfo, conditions, medications, newAllergies, contacts);
+    } else if (addModal.type === "contact_name") {
+      // Step 1: name — go to step 2 for phone
+      setAddModal({ ...addModal, type: "contact_phone", step: 2, partial: { name: value.trim() }, visible: true });
+      return;
+    } else if (addModal.type === "contact_phone") {
+      const name = addModal.partial.name;
+      const phone = value.trim();
+      if (!name || !phone) { setAddModal({ ...addModal, visible: false }); return; }
+      const newContacts = [...contacts, { id: `con_${Date.now()}`, name, phone, relation: "Family" }];
+      setContacts(newContacts);
+      saveToFirestore(medicalInfo, conditions, medications, allergies, newContacts);
+    }
+    setAddModal({ ...addModal, visible: false });
+  };
+
+  const deleteMedication = (id) => {
+    const newMeds = medications.filter((m) => m.id !== id);
+    setMedications(newMeds);
+    saveToFirestore(medicalInfo, conditions, newMeds, allergies, contacts);
+  };
+
+  const deleteAllergy = (id) => {
+    const newAllergies = allergies.filter((a) => a.id !== id);
+    setAllergies(newAllergies);
+    saveToFirestore(medicalInfo, conditions, medications, newAllergies, contacts);
+  };
+
+  const deleteContact = (id) => {
+    const newContacts = contacts.filter((c) => c.id !== id);
+    setContacts(newContacts);
+    saveToFirestore(medicalInfo, conditions, medications, allergies, newContacts);
+  };
 
   const openInfoEdit = (label, field) => {
     setEditModal({
@@ -234,33 +301,147 @@ export default function EmergencyScreen({ navigation }) {
       );
       setConditions(newConditions);
     }
-    saveToFirestore(newInfo, newConditions);
+    saveToFirestore(newInfo, newConditions, medications, allergies, contacts);
     setEditModal({ ...editModal, visible: false });
   };
 
-  // --- PDF GENERATION (Pro Web Formatting) ---
+  // --- PDF GENERATION ---
   const generatePDF = async () => {
-    const htmlContent = `
-      <html>
-        <body style="font-family: Helvetica; padding: 30px; color: #1E293B;">
-          <div style="background: #C54242; padding: 20px; color: white; border-radius: 10px;">
-            <h1 style="margin:0;">EMERGENCY MEDICAL RECORD</h1>
-            <p>ID: ${medicalInfo.patientId} | PIN: ${medicalInfo.emergencyPin}</p>
-          </div>
-          <h2 style="margin-top:30px;">${medicalInfo.name.toUpperCase()}</h2>
-          <p><b>Blood:</b> ${medicalInfo.bloodGroup} | <b>Age:</b> ${medicalInfo.age} | <b>Weight:</b> ${medicalInfo.weight}kg</p>
-          <hr/>
-          <h3>MEDICAL CONDITIONS</h3>
-          ${conditions.map((c) => `<p><b>• ${c.title}</b>: ${c.subtitle}<br/><i>History: ${c.history}</i></p>`).join("")}
-          <h3>ALLERGIES</h3>
-          <p>${allergies.map((a) => `${a.name} (${a.severity})`).join(", ")}</p>
-          <h3>MEDICATIONS</h3>
-          ${medications.map((m) => `• ${m.name} (${m.dose})<br/>`).join("")}
-        </body>
-      </html>
-    `;
-    const { uri } = await Print.printToFileAsync({ html: htmlContent });
-    await Sharing.shareAsync(uri);
+    try {
+      const conditionsHtml = conditions.length
+        ? conditions.map((c) => `
+          <tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;font-weight:700;">${c.title}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;color:#64748B;">${c.subtitle || "—"}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;color:#94A3B8;font-size:11px;">${c.history || "—"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="3" style="padding:12px;color:#94A3B8;text-align:center;">No conditions recorded</td></tr>`;
+
+      const allergiesHtml = allergies.length
+        ? allergies.map((a) => `
+          <span style="display:inline-block;background:#FEF3C7;color:#92400E;border-radius:20px;padding:4px 12px;margin:3px;font-size:12px;font-weight:700;">
+            ⚠️ ${a.name}${a.severity ? ` — ${a.severity}` : ""}
+          </span>`).join("")
+        : `<span style="color:#94A3B8;">No known allergies</span>`;
+
+      const medsHtml = medications.length
+        ? medications.map((m) => `
+          <tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;font-weight:700;">${m.name}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;color:#64748B;">${m.dose || "As prescribed"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="2" style="padding:12px;color:#94A3B8;text-align:center;">No medications recorded</td></tr>`;
+
+      const contactsHtml = contacts.length
+        ? contacts.map((c) => `
+          <tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;font-weight:700;">${c.name}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;color:#64748B;">${c.relation || "Contact"}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #F1F5F9;color:#2E75B6;font-weight:700;">${c.phone}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="3" style="padding:12px;color:#94A3B8;text-align:center;">No emergency contacts recorded</td></tr>`;
+
+      const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Helvetica, Arial, sans-serif; color: #1E293B; background: #F8FAFC; }
+    .page { max-width: 700px; margin: 0 auto; padding: 32px; }
+    .header { background: linear-gradient(135deg, #C54242, #7F1D1D); color: white; border-radius: 16px; padding: 28px 32px; margin-bottom: 24px; }
+    .header h1 { font-size: 22px; font-weight: 900; letter-spacing: 2px; margin-bottom: 4px; }
+    .header p { font-size: 12px; opacity: 0.8; }
+    .id-row { display: flex; gap: 16px; margin-top: 12px; }
+    .id-chip { background: rgba(255,255,255,0.2); border-radius: 20px; padding: 4px 14px; font-size: 12px; font-weight: 700; }
+    .patient-name { font-size: 26px; font-weight: 900; margin: 4px 0; }
+    .vitals-row { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+    .vital-chip { background: rgba(255,255,255,0.15); border-radius: 12px; padding: 8px 16px; text-align: center; }
+    .vital-label { font-size: 9px; opacity: 0.7; letter-spacing: 1px; text-transform: uppercase; }
+    .vital-value { font-size: 18px; font-weight: 900; }
+    .section { background: white; border-radius: 14px; margin-bottom: 16px; overflow: hidden; box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+    .section-title { padding: 14px 16px; font-size: 11px; font-weight: 900; letter-spacing: 1.5px; text-transform: uppercase; color: #64748B; background: #F8FAFC; border-bottom: 1px solid #F1F5F9; }
+    table { width: 100%; border-collapse: collapse; }
+    .allergies-box { padding: 14px 12px; }
+    .footer { text-align: center; color: #94A3B8; font-size: 10px; margin-top: 24px; }
+    .emergency-strip { background: #FEF2F2; border: 2px solid #FECACA; border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; text-align: center; color: #B91C1C; font-weight: 900; font-size: 13px; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="emergency-strip">🚨 EMERGENCY MEDICAL RECORD — SHARE WITH FIRST RESPONDERS</div>
+
+    <div class="header">
+      <h1>Arogyasathi</h1>
+      <p>AI-Powered Personal Health Record</p>
+      <p class="patient-name">${medicalInfo.name.toUpperCase()}</p>
+      <div class="id-row">
+        <span class="id-chip">ID: ${medicalInfo.patientId}</span>
+        <span class="id-chip">Generated: ${new Date().toLocaleDateString("en-IN")}</span>
+      </div>
+      <div class="vitals-row">
+        <div class="vital-chip"><div class="vital-label">Blood Group</div><div class="vital-value">${medicalInfo.bloodGroup || "—"}</div></div>
+        <div class="vital-chip"><div class="vital-label">Age</div><div class="vital-value">${medicalInfo.age || "—"}</div></div>
+        <div class="vital-chip"><div class="vital-label">Weight</div><div class="vital-value">${medicalInfo.weight ? medicalInfo.weight + " kg" : "—"}</div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🫀 Medical Conditions</div>
+      <table>
+        <thead><tr style="background:#F8FAFC;font-size:10px;color:#94A3B8;font-weight:700;text-transform:uppercase;">
+          <th style="padding:8px 12px;text-align:left;">Condition</th>
+          <th style="padding:8px 12px;text-align:left;">Details</th>
+          <th style="padding:8px 12px;text-align:left;">History</th>
+        </tr></thead>
+        <tbody>${conditionsHtml}</tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title">💊 Current Medications</div>
+      <table>
+        <thead><tr style="background:#F8FAFC;font-size:10px;color:#94A3B8;font-weight:700;text-transform:uppercase;">
+          <th style="padding:8px 12px;text-align:left;">Medication</th>
+          <th style="padding:8px 12px;text-align:left;">Dosage</th>
+        </tr></thead>
+        <tbody>${medsHtml}</tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title">⚠️ Allergies</div>
+      <div class="allergies-box">${allergiesHtml}</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📞 Emergency Contacts</div>
+      <table>
+        <thead><tr style="background:#F8FAFC;font-size:10px;color:#94A3B8;font-weight:700;text-transform:uppercase;">
+          <th style="padding:8px 12px;text-align:left;">Name</th>
+          <th style="padding:8px 12px;text-align:left;">Relation</th>
+          <th style="padding:8px 12px;text-align:left;">Phone</th>
+        </tr></thead>
+        <tbody>${contactsHtml}</tbody>
+      </table>
+    </div>
+
+    <div class="footer">
+      Generated by Arogyasathi • ${new Date().toLocaleString("en-IN")} • For medical emergencies only
+    </div>
+  </div>
+</body>
+</html>`;
+
+      const { uri } = await Print.printToFileAsync({ html: htmlContent, base64: false });
+      await Sharing.shareAsync(uri, {
+        mimeType: "application/pdf",
+        dialogTitle: "Share Emergency Medical Record",
+        UTI: "com.adobe.pdf",
+      });
+    } catch (err) {
+      Alert.alert("PDF Error", "Could not generate PDF: " + err.message);
+    }
   };
 
   const makeCall = (phone) => Linking.openURL(`tel:${phone}`);
@@ -273,13 +454,19 @@ export default function EmergencyScreen({ navigation }) {
           <MaterialCommunityIcons name="arrow-left" size={28} color="#2E75B6" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>EMERGENCY CARD</Text>
-        <TouchableOpacity onPress={() => { if (isEditing) saveToFirestore(medicalInfo, conditions); setIsEditing(!isEditing); }}>
-          <MaterialCommunityIcons
-            name={isEditing ? "check-circle" : "cog-outline"}
-            size={28}
-            color="#2E75B6"
-          />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+          {isEditing && (
+            <TouchableOpacity onPress={() => { saveToFirestore(medicalInfo, conditions, medications, allergies, contacts); setIsEditing(false); }}>
+              <MaterialCommunityIcons name="check-circle" size={28} color="#10B981" />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={() => isEditing ? setIsEditing(false) : setIsEditing(true)}>
+            <MaterialCommunityIcons name={isEditing ? "close-circle-outline" : "pencil-outline"} size={26} color="#2E75B6" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.navigate("EmergencyCardSettings")}>
+            <MaterialCommunityIcons name="shield-lock-outline" size={26} color="#C54242" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -405,87 +592,155 @@ export default function EmergencyScreen({ navigation }) {
         {/* --- ALLERGIES --- */}
         <View style={styles.allergySection}>
           <View style={styles.allergyHeader}>
-            <MaterialCommunityIcons
-              name="alert-circle"
-              size={20}
-              color="#D14343"
-            />
+            <MaterialCommunityIcons name="alert-circle" size={20} color="#D14343" />
             <Text style={styles.allergyTitle}>SEVERE ALLERGIES</Text>
+            {isEditing && (
+              <TouchableOpacity
+                onPress={() => openAddModal("allergy")}
+                style={[styles.editChip, { marginLeft: "auto" }]}
+              >
+                <MaterialCommunityIcons name="plus" size={14} color="#2E75B6" />
+                <Text style={styles.editChipText}>Add</Text>
+              </TouchableOpacity>
+            )}
           </View>
           <View style={styles.tagRow}>
             {allergies.map((a) => (
-              <View key={a.id} style={styles.tag}>
-                <Text style={styles.tagText}>
-                  {a.name} - {a.severity}
-                </Text>
+              <View key={a.id} style={[styles.tag, { flexDirection: "row", alignItems: "center", gap: 6 }]}>
+                <Text style={styles.tagText}>{a.name} - {a.severity}</Text>
+                {isEditing && (
+                  <TouchableOpacity onPress={() => deleteAllergy(a.id)}>
+                    <MaterialCommunityIcons name="close-circle" size={16} color="rgba(255,255,255,0.8)" />
+                  </TouchableOpacity>
+                )}
               </View>
             ))}
           </View>
         </View>
 
         {/* --- MEDICATIONS --- */}
-        <Text style={styles.sectionTitleAlt}>CURRENT MEDICATIONS</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitleAlt}>CURRENT MEDICATIONS</Text>
+          {isEditing && (
+            <TouchableOpacity
+              onPress={() => openAddModal("medication")}
+              style={styles.editChip}
+            >
+              <MaterialCommunityIcons name="plus" size={14} color="#2E75B6" />
+              <Text style={styles.editChipText}>Add</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         <View style={styles.medBox}>
           {medications.map((m) => (
             <View key={m.id} style={styles.medRow}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
                 <MaterialCommunityIcons name="pill" size={20} color="#2E75B6" />
                 <Text style={styles.medName}>{m.name}</Text>
               </View>
               <Text style={styles.medDose}>{m.dose}</Text>
+              {isEditing && (
+                <TouchableOpacity onPress={() => deleteMedication(m.id)} style={{ marginLeft: 8 }}>
+                  <MaterialCommunityIcons name="trash-can-outline" size={18} color="#EF4444" />
+                </TouchableOpacity>
+              )}
             </View>
           ))}
+          {medications.length === 0 && (
+            <View style={styles.medRow}>
+              <Text style={{ color: "#94A3B8", fontSize: 13, padding: 4 }}>No medications recorded</Text>
+            </View>
+          )}
         </View>
 
         {/* --- EMERGENCY CONTACTS --- */}
-        <Text style={styles.sectionTitleAlt}>EMERGENCY CONTACTS</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitleAlt}>EMERGENCY CONTACTS</Text>
+          {isEditing && (
+            <TouchableOpacity
+              onPress={() => openAddModal("contact_name")}
+              style={styles.editChip}
+            >
+              <MaterialCommunityIcons name="plus" size={14} color="#2E75B6" />
+              <Text style={styles.editChipText}>Add</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         {contacts.map((con) => (
           <View key={con.id} style={styles.contactCard}>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
               <View style={styles.avatar}>
-                <MaterialCommunityIcons
-                  name="account"
-                  size={24}
-                  color="#64748B"
-                />
+                <MaterialCommunityIcons name="account" size={24} color="#64748B" />
               </View>
               <View>
                 <Text style={styles.contactName}>{con.name}</Text>
                 <Text style={styles.contactPhone}>{con.phone}</Text>
               </View>
             </View>
-            <TouchableOpacity
-              style={styles.callBtn}
-              onPress={() => makeCall(con.phone)}
-            >
-              <MaterialCommunityIcons name="phone" size={20} color="#FFF" />
-            </TouchableOpacity>
+            {isEditing ? (
+              <TouchableOpacity onPress={() => deleteContact(con.id)} style={{ padding: 8 }}>
+                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#EF4444" />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.callBtn} onPress={() => makeCall(con.phone)}>
+                <MaterialCommunityIcons name="phone" size={20} color="#FFF" />
+              </TouchableOpacity>
+            )}
           </View>
         ))}
+        {contacts.length === 0 && !isEditing && (
+          <Text style={{ color: "#94A3B8", fontSize: 13, marginBottom: 8 }}>No emergency contacts added</Text>
+        )}
 
-        {/* --- QR SCAN --- */}
+        {/* --- QR / SECURE CARD SECTION --- */}
         <View style={styles.qrCard}>
-          <Text style={styles.qrLabel}>SCAN FOR FULL MEDICAL HISTORY</Text>
-          <View style={styles.qrContainer}>
-            <QRCode
-              value={`BEGIN:MEDIVAULT\nNAME:${medicalInfo.name}\nID:${medicalInfo.patientId}\nBLOOD:${medicalInfo.bloodGroup}\nAGE:${medicalInfo.age}\nEND:MEDIVAULT`}
-              size={150}
-            />
-          </View>
-          <TouchableOpacity
-            onPress={async () => {
-              try {
-                const { uri } = await Print.printToFileAsync({ html: `<html><body style="text-align:center;padding:50px;"><h2>MediVault Emergency</h2><p>${medicalInfo.name} | ${medicalInfo.patientId}</p><p>Blood: ${medicalInfo.bloodGroup} | Age: ${medicalInfo.age}</p></body></html>` });
-                await Sharing.shareAsync(uri);
-              } catch (e) { Alert.alert("Error", "Could not share."); }
-            }}
-          >
-            <Text style={styles.qrDownload}>Share Emergency Info</Text>
-          </TouchableOpacity>
-          <Text style={styles.qrFooter}>
-            Authorized medical personnel only.
+          {shareUrl ? (
+            <>
+              <View style={styles.securebadge}>
+                <MaterialCommunityIcons name="shield-check" size={14} color="#059669" />
+                <Text style={styles.secureBadgeText}>PASSWORD-PROTECTED LINK ACTIVE</Text>
+              </View>
+              <Text style={styles.qrLabel}>SCAN FOR EMERGENCY ACCESS</Text>
+              <View style={styles.qrContainer}>
+                <QRCode value={shareUrl} size={150} backgroundColor="white" color="#1E293B" />
+              </View>
+              <Text style={styles.qrFooter}>Password required to view records.</Text>
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={styles.qrActionBtn}
+                  onPress={() => navigation.navigate("EmergencyCardView", { shareUrl })}
+                >
+                  <MaterialCommunityIcons name="qrcode" size={16} color="#2E75B6" />
+                  <Text style={styles.qrActionText}>View Card</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.qrActionBtn}
+                  onPress={() => navigation.navigate("EmergencyCardSettings")}
+                >
+                  <MaterialCommunityIcons name="refresh" size={16} color="#2E75B6" />
+                  <Text style={styles.qrActionText}>Regenerate</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.qrLabel}>SECURE EMERGENCY CARD</Text>
+              <MaterialCommunityIcons name="qrcode-plus" size={80} color="#CBD5E1" style={{ marginVertical: 16 }} />
+              <Text style={[styles.qrFooter, { textAlign: "center", marginBottom: 12 }]}>
+                Generate a password-protected QR link{"\n"}that first responders can scan.
+              </Text>
+              <TouchableOpacity
+                style={styles.generateBtn}
+                onPress={() => navigation.navigate("EmergencyCardSettings")}
+              >
+                <MaterialCommunityIcons name="shield-lock" size={18} color="white" />
+                <Text style={styles.generateBtnText}>Generate Secure Card</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          <Text style={[styles.qrFooter, { marginTop: 10 }]}>
+            Authorized medical personnel only • Secured by Arogyasathi
           </Text>
-          <Text style={styles.qrFooter}>Secured by MediVault Encryption</Text>
         </View>
 
         {/* --- PDF BUTTON --- */}
@@ -503,6 +758,27 @@ export default function EmergencyScreen({ navigation }) {
         placeholder="Enter value"
         onCancel={() => setEditModal({ ...editModal, visible: false })}
         onSave={handleEditSave}
+      />
+
+      {/* Add item modal */}
+      <EditModal
+        visible={addModal.visible}
+        title={
+          addModal.type === "medication" ? "Add Medication" :
+          addModal.type === "allergy" ? "Add Allergy" :
+          addModal.type === "contact_name" ? "Contact Name" :
+          "Contact Phone Number"
+        }
+        initialValue=""
+        placeholder={
+          addModal.type === "medication" ? "e.g. Metformin — 500mg" :
+          addModal.type === "allergy" ? "e.g. Penicillin" :
+          addModal.type === "contact_name" ? "e.g. Ramesh Kumar" :
+          "e.g. +91 98765 43210"
+        }
+        keyboardType={addModal.type === "contact_phone" ? "phone-pad" : "default"}
+        onCancel={() => setAddModal({ ...addModal, visible: false })}
+        onSave={handleAddSave}
       />
     </SafeAreaView>
   );
@@ -711,13 +987,38 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   qrContainer: { padding: 10, backgroundColor: "#FFF" },
-  qrDownload: {
-    color: "#2E75B6",
-    fontWeight: "900",
-    fontSize: 11,
-    marginTop: 15,
-    textDecorationLine: "underline",
+  securebadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    marginBottom: 12,
   },
+  secureBadgeText: { fontSize: 9, fontWeight: "900", color: "#059669", letterSpacing: 0.5 },
+  qrActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  qrActionText: { color: "#2E75B6", fontWeight: "700", fontSize: 13 },
+  generateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#C54242",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  generateBtnText: { color: "white", fontWeight: "900", fontSize: 14 },
   qrFooter: { fontSize: 9, color: "#94A3B8", marginTop: 5, fontWeight: "bold" },
   pdfBtn: {
     backgroundColor: "#1E293B",

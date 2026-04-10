@@ -6,7 +6,7 @@ A React Native (Expo SDK 54) mobile app for managing medical records securely.
 
 - 🔐 **Dual-channel verification** (Phone OTP + Email OTP)
 - 📋 **Medical report upload** (Image & PDF) with cloud storage
-- 🤖 **AI-powered analysis** using Google Gemini
+- 🤖 **AI-powered analysis** using Groq (Llama 3.3 70B)
 - 🚨 **Emergency card** with QR code, PDF export & one-tap calling
 - 👨‍👩‍👧‍👦 **Family Hub** for monitoring family members' health
 - 📊 **Health score tracking** with trend analysis
@@ -15,7 +15,7 @@ A React Native (Expo SDK 54) mobile app for managing medical records securely.
 
 - **Frontend:** React Native + Expo SDK 54
 - **Backend:** Firebase (Auth, Firestore, Cloud Functions, Storage)
-- **AI:** Google Generative AI (Gemini 1.5 Flash)
+- **AI:** Groq (Llama 3.3 70B)
 - **State:** React Context API
 
 ## Getting Started

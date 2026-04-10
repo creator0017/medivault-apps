@@ -9,7 +9,7 @@ export default function WelcomeScreen({ navigation }) {
         <View style={styles.iconCircle}>
           <MaterialCommunityIcons name="shield-check" size={60} color="#FFF" />
         </View>
-        <Text style={styles.title}>Welcome to MediVault</Text>
+        <Text style={styles.title}>Welcome to Arogyasathi</Text>
         <Text style={styles.desc}>
           Your personal health records, secured and always with you.
         </Text>
