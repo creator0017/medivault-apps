@@ -64,7 +64,7 @@ export default function UploadReportScreen({ navigation }) {
     }
     const remaining = MAX_FILES - files.length;
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaType,
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
       selectionLimit: remaining,
       quality: 0.85,

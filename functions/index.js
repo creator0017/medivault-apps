@@ -196,14 +196,21 @@ exports.verifyEmergencyAccess = functions.https.onRequest((req, res) => {
       }
 
       // Rate-limit: max 3 failed attempts per 15 minutes
-      const recentFailed = shareData.accessLog.filter(
+      const accessLog = shareData.accessLog || [];
+      const recentFailed = accessLog.filter(
         (log) => log.timestamp.toMillis() > Date.now() - 15 * 60 * 1000 && !log.success
       );
       if (recentFailed.length >= 3) {
         return res.status(429).json({ error: "Too many failed attempts. Please try again later." });
       }
 
-      const isValid = await bcrypt.compare(password, shareData.passwordHash);
+      // Support both bcrypt hash (old) and plain PIN (new mobile flow)
+      let isValid = false;
+      if (shareData.passwordHash) {
+        isValid = await bcrypt.compare(password, shareData.passwordHash);
+      } else if (shareData.pin) {
+        isValid = password === shareData.pin;
+      }
 
       const ipAddress = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
       const userAgent = req.headers["user-agent"];
@@ -222,8 +229,14 @@ exports.verifyEmergencyAccess = functions.https.onRequest((req, res) => {
         return res.status(401).json({ error: "Incorrect password" });
       }
 
-      const pdfToken = crypto.randomBytes(16).toString("hex");
-      const pdfUrl = await generateAndStorePDF(shareData.userId, pdfToken);
+      // Use pre-uploaded PDF from mobile if available, otherwise generate server-side
+      let pdfUrl;
+      if (shareData.pdfUrl) {
+        pdfUrl = shareData.pdfUrl;
+      } else {
+        const pdfToken = crypto.randomBytes(16).toString("hex");
+        pdfUrl = await generateAndStorePDF(shareData.userId, pdfToken);
+      }
 
       await sendAccessNotification(shareData.userId, ipAddress);
 

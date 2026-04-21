@@ -5,7 +5,8 @@
       "Bash(tasklist)",
       "Bash(taskkill /PID 7448 /F)",
       "Bash(powershell -Command \"Get-Process -Id 7448 | Stop-Process -Force\")",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

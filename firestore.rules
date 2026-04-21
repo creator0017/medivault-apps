@@ -11,7 +11,7 @@ service cloud.firestore {
       match /reports/{reportId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
         allow read: if request.auth != null
-          && userId in get(/databases/$(database)/documents/users/$(userId)).data.get("authorizedViewers", []);
+          && request.auth.uid in get(/databases/$(database)/documents/users/$(userId)).data.get("authorizedViewers", []);
       }
 
       // AI analyses — owner + authorized family viewers
@@ -21,9 +21,11 @@ service cloud.firestore {
           && request.auth.uid in get(/databases/$(database)/documents/users/$(userId)).data.get("authorizedViewers", []);
       }
 
-      // Emergency card — owner only
+      // Emergency card — owner + authorized family viewers (full/emergency permission)
       match /emergencyCard/{document=**} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/users/$(userId)).data.get("authorizedViewers", []);
       }
 
       // Health reports — owner only
@@ -34,6 +36,13 @@ service cloud.firestore {
       // Access logs — owner only
       match /accessLogs/{logId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Notifications — owner reads/deletes, any authenticated family member can write
+      match /notifications/{notifId} {
+        allow read, delete, update: if request.auth != null && request.auth.uid == userId;
+        allow create: if request.auth != null
+          && request.resource.data.fromUid == request.auth.uid;
       }
     }
 

@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system/legacy";
-import * as Speech from "expo-speech";
+import useSarvamTTS from "../hooks/useSarvamTTS";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { addDoc, collection, doc, getDocs, limit, orderBy, query, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
@@ -273,7 +273,7 @@ export default function AIDashboard() {
   const route = useRoute();
   const navigation = useNavigation();
   const { userData } = useUser();
-  const { reportUri, reportMime, cachedAnalysis } = route.params || {};
+  const { reportUri, reportMime, cachedAnalysis, reportId } = route.params || {};
 
   // cachedAnalysis = pre-loaded analysis object from history screen
   const initialStep = cachedAnalysis ? "done" : reportUri ? "scanning" : "history";
@@ -282,12 +282,32 @@ export default function AIDashboard() {
   const [ocrText, setOcrText]     = useState(cachedAnalysis?.ocrText || "");
   const [analysis, setAnalysis]   = useState(cachedAnalysis || null);
   const [saving, setSaving]       = useState(false);
-  const [speaking, setSpeaking]   = useState(false);
   const [showOcr, setShowOcr]     = useState(false);
   const [activeTab, setActiveTab] = useState("summary");
   const [errorMsg, setErrorMsg]   = useState("");
   const [history, setHistory]     = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // ─── Multi-language voice support ──────────────────────────────────────────
+  const LANGUAGES = [
+    { code: "en-IN", label: "English",    flag: "🇬🇧", sarvamSpeaker: "tanya"  },
+    { code: "hi-IN", label: "हिन्दी",      flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "mr-IN", label: "मराठी",       flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "ta-IN", label: "தமிழ்",       flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "te-IN", label: "తెలుగు",      flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "kn-IN", label: "ಕನ್ನಡ",       flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "bn-IN", label: "বাংলা",       flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "gu-IN", label: "ગુજરાતી",     flag: "🇮🇳", sarvamSpeaker: "anand"  },
+    { code: "ml-IN", label: "മലയാളം",     flag: "🇮🇳", sarvamSpeaker: "anand"  },
+  ];
+  const [selectedLang, setSelectedLang] = useState(LANGUAGES[0]);
+  const [showLangPicker, setShowLangPicker] = useState(false);
+
+  const { speak: sarvamSpeak, stop: sarvamStop, speaking } = useSarvamTTS({
+    cacheFile: "ai_dashboard_voice.wav",
+    languageCode: selectedLang.code,
+    speaker: selectedLang.sarvamSpeaker,
+  });
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -318,69 +338,135 @@ export default function AIDashboard() {
     setHistoryLoading(false);
   };
 
-  // ─── OCR + AI extraction ────────────────────────────────────────────────────
+  // ─── OCR + AI extraction (Real Gemini Vision API) ──────────────────────────
   const analyzeReport = async () => {
     try {
       setStep("scanning");
-      
-      // Vision feature is currently disabled. To enable lab report analysis,
-      // implement a vision API (e.g., Google Cloud Vision, Azure Computer Vision,
-      // or a local OCR library like Tesseract.js).
-      
-      // For now, return mock data for demonstration
-      const mockAnalysis = {
-        date: new Date().toLocaleDateString("en-IN"),
-        lab: "Demo Lab",
-        patient: "Demo Patient",
-        age: "45",
-        bloodGroup: "O+",
-        gender: "Male",
-        conditions: [
-          { title: "Type 2 Diabetes", subtitle: "HbA1c: 7.2%", history: "Diagnosed 2023" },
-          { title: "High Cholesterol", subtitle: "Total: 240 mg/dL", history: "Borderline high" },
-        ],
-        medications: [
-          { name: "Metformin", dose: "500mg", frequency: "Twice daily" },
-          { name: "Atorvastatin", dose: "20mg", frequency: "Once daily" },
-        ],
-        allergies: [
-          { name: "Penicillin", severity: "SEVERE" },
-        ],
-        metrics: [
-          { name: "HbA1c", value: 7.2, unit: "%", normalRange: "4.0 - 5.7", status: "high" },
-          { name: "Fasting Blood Sugar", value: 110, unit: "mg/dL", normalRange: "70 - 100", status: "borderline" },
-          { name: "Total Cholesterol", value: 240, unit: "mg/dL", normalRange: "<200", status: "high" },
-          { name: "HDL", value: 45, unit: "mg/dL", normalRange: ">40", status: "normal" },
-          { name: "LDL", value: 160, unit: "mg/dL", normalRange: "<100", status: "high" },
-        ],
-        summary: "Your lab results show elevated HbA1c (7.2%) indicating diabetes, and high total cholesterol (240 mg/dL). Your HDL is within normal range. Please consult your doctor for medication adjustments and lifestyle changes.",
-        ocrText: "Mock OCR text for demonstration purposes.",
+
+      const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+      if (!GEMINI_KEY) throw new Error("Gemini API key not configured. Set EXPO_PUBLIC_GEMINI_API_KEY in your .env file.");
+
+      // ── Step 1: Read file as base64 ────────────────────────────────────────
+      let base64Data = null;
+      let mimeType = reportMime || "image/jpeg";
+
+      // If the URI is a remote URL (Firebase Storage), download it to a local temp file first
+      let localUri = reportUri;
+      if (reportUri && (reportUri.startsWith("http://") || reportUri.startsWith("https://"))) {
+        const ext = mimeType.includes("pdf") ? "pdf" : "jpg";
+        const tempPath = FileSystem.cacheDirectory + `temp_report_${Date.now()}.${ext}`;
+        const downloadResult = await FileSystem.downloadAsync(reportUri, tempPath);
+        if (downloadResult.status !== 200) throw new Error("Could not download report. Please check your connection.");
+        localUri = downloadResult.uri;
+      }
+
+      const fileInfo = await FileSystem.getInfoAsync(localUri);
+      if (!fileInfo.exists) throw new Error("Report file not found. Please re-upload.");
+
+      base64Data = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+
+      if (!base64Data) throw new Error("Could not read the report file.");
+
+      // ── Step 2: Call Gemini Vision API ─────────────────────────────────────
+      const { GoogleGenerativeAI } = require("@google/generative-ai");
+      const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+      const imagePart = {
+        inlineData: {
+          data: base64Data,
+          mimeType: mimeType.includes("pdf") ? "image/jpeg" : mimeType,
+        },
       };
 
-      // Simulate processing delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      let result;
+      try {
+        result = await model.generateContent([EXTRACTION_PROMPT, imagePart]);
+      } catch (primaryErr) {
+        const errMsg = primaryErr?.message || "";
+        const isTemporary = errMsg.includes("503") || errMsg.includes("429") ||
+          errMsg.includes("overloaded") || errMsg.includes("demand") || errMsg.includes("unavailable");
+        if (isTemporary) {
+          console.warn("gemini-2.0-flash overloaded. Retrying in 2s...");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          result = await model.generateContent([EXTRACTION_PROMPT, imagePart]);
+        } else {
+          throw primaryErr;
+        }
+      }
+
+      const rawText = result.response.text().trim();
+
+      // ── Step 3: Parse JSON response ────────────────────────────────────────
+      let parsedAnalysis = null;
+      try {
+        // Strip any markdown code fences if model wrapped the JSON
+        const cleaned = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+        parsedAnalysis = JSON.parse(cleaned);
+      } catch {
+        // Try extracting first valid JSON block from the text
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsedAnalysis = JSON.parse(jsonMatch[0]);
+          } catch {
+            throw new Error("AI returned an unreadable response. Please try with a clearer image.");
+          }
+        } else {
+          throw new Error("Could not extract data from the report. Please ensure the image is clear and readable.");
+        }
+      }
+
+      // ── Step 4: Validate and normalise ─────────────────────────────────────
+      if (!parsedAnalysis.metrics || parsedAnalysis.metrics.length === 0) {
+        throw new Error("No test values found in this report. Please upload a blood test result image.");
+      }
+
+      const today = new Date().toLocaleDateString("en-IN");
+      const analysis = {
+        date: parsedAnalysis.date || today,
+        lab: parsedAnalysis.lab || "Unknown Lab",
+        patient: parsedAnalysis.patient || userData?.fullName || "Patient",
+        age: String(parsedAnalysis.age || ""),
+        gender: parsedAnalysis.gender || "",
+        bloodGroup: parsedAnalysis.bloodGroup || "",
+        metrics: (parsedAnalysis.metrics || []).map(m => ({
+          name: m.name || "Unknown",
+          value: typeof m.value === "number" ? m.value : parseFloat(m.value) || 0,
+          unit: m.unit || "",
+          normalRange: m.normalRange || "",
+          status: (m.status || "").toLowerCase(),
+        })),
+        conditions: parsedAnalysis.conditions || [],
+        medications: parsedAnalysis.medications || [],
+        allergies: parsedAnalysis.allergies || [],
+        summary: parsedAnalysis.summary || "Report analyzed successfully.",
+        ocrText: parsedAnalysis.ocrText || rawText.slice(0, 500),
+      };
 
       if (!isMounted.current) return;
-      setAnalysis(mockAnalysis);
-      setOcrText(mockAnalysis.ocrText || "");
+      setAnalysis(analysis);
+      setOcrText(analysis.ocrText || "");
       setStep("done");
 
       // Auto-save silently so Chat can immediately fetch it without manual saving
       if (userData?.uid) {
         addDoc(collection(db, "users", userData.uid, "aiAnalyses"), {
-          date: mockAnalysis.date,
-          lab: mockAnalysis.lab,
-          patient: mockAnalysis.patient,
-          age: mockAnalysis.age,
-          bloodGroup: mockAnalysis.bloodGroup,
-          gender: mockAnalysis.gender,
-          conditions: mockAnalysis.conditions,
-          medications: mockAnalysis.medications,
-          allergies: mockAnalysis.allergies,
-          metrics: mockAnalysis.metrics,
-          summary: mockAnalysis.summary,
-          ocrText: mockAnalysis.ocrText,
+          date: analysis.date,
+          lab: analysis.lab,
+          patient: analysis.patient,
+          age: analysis.age,
+          bloodGroup: analysis.bloodGroup,
+          gender: analysis.gender,
+          conditions: analysis.conditions,
+          medications: analysis.medications,
+          allergies: analysis.allergies,
+          metrics: analysis.metrics,
+          summary: analysis.summary,
+          ocrText: analysis.ocrText,
           analyzedAt: serverTimestamp(),
+          ...(reportId ? { sourceReportId: reportId } : {}),
         }).catch(err => console.log("Silent auto-save failed", err));
       }
     } catch (err) {
@@ -391,26 +477,13 @@ export default function AIDashboard() {
     }
   };
 
-  // ─── Voice explanation ──────────────────────────────────────────────────────
-  const handleSpeak = async () => {
-    if (speaking) {
-      await Speech.stop();
-      setSpeaking(false);
-      return;
-    }
-
+  // ─── Voice explanation via useSarvamTTS (translate + TTS in one pipeline) ───
+  const handleSpeak = () => {
     const text = analysis?.summary ||
       "No analysis available yet. Please upload a lab report first.";
-
-    setSpeaking(true);
-    Speech.speak(text, {
-      language: "en-IN",   // Indian English accent
-      pitch: 1.0,
-      rate: 0.85,          // Slightly slower for elderly users
-      onDone: () => { if (isMounted.current) setSpeaking(false); },
-      onError: () => { if (isMounted.current) setSpeaking(false); },
-    });
+    sarvamSpeak(text);
   };
+
 
   // ─── Save to Firestore ──────────────────────────────────────────────────────
   const handleSave = async () => {
@@ -434,6 +507,7 @@ export default function AIDashboard() {
         summary: analysis.summary,
         ocrText: analysis.ocrText,
         analyzedAt: serverTimestamp(),
+        ...(reportId ? { sourceReportId: reportId } : {}),
       });
 
       // ── Auto-populate healthReports collection from extracted metrics ──────────
@@ -496,6 +570,7 @@ export default function AIDashboard() {
                 testDate: reportDate,
                 source: "ai_scan",
                 createdAt: serverTimestamp(),
+                ...(reportId ? { sourceReportId: reportId } : {}),
               })
             );
             mapped = true;
@@ -515,6 +590,7 @@ export default function AIDashboard() {
               testDate: reportDate,
               source: "ai_scan",
               createdAt: serverTimestamp(),
+              ...(reportId ? { sourceReportId: reportId } : {}),
             })
           );
         }
@@ -860,7 +936,7 @@ export default function AIDashboard() {
 
       {/* ── Header ─────────────────────────────────────────────── */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => { Speech.stop(); navigation.goBack(); }}>
+        <TouchableOpacity onPress={() => { sarvamStop(); navigation.goBack(); }}>
           <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>AI Analysis</Text>
@@ -892,6 +968,50 @@ export default function AIDashboard() {
         </View>
       )}
 
+      {/* ── Language Selector ── */}
+      <View style={styles.langRow}>
+        <TouchableOpacity
+          style={styles.langSelector}
+          onPress={() => setShowLangPicker(!showLangPicker)}
+        >
+          <MaterialCommunityIcons name="translate" size={18} color="#7C3AED" />
+          <Text style={styles.langSelectorText}>{selectedLang.flag} {selectedLang.label}</Text>
+          <MaterialCommunityIcons
+            name={showLangPicker ? "chevron-up" : "chevron-down"}
+            size={18}
+            color="#7C3AED"
+          />
+        </TouchableOpacity>
+        <Text style={styles.langHint}>Select language for voice</Text>
+      </View>
+
+      {/* ── Language Picker Dropdown ── */}
+      {showLangPicker && (
+        <View style={styles.langPickerContainer}>
+          {LANGUAGES.map((lang) => {
+            const isActive = selectedLang.code === lang.code;
+            return (
+              <TouchableOpacity
+                key={lang.code}
+                style={[styles.langChip, isActive && styles.langChipActive]}
+                onPress={() => {
+                  setSelectedLang(lang);
+                  setShowLangPicker(false);
+                }}
+              >
+                <Text style={styles.langChipFlag}>{lang.flag}</Text>
+                <Text style={[styles.langChipLabel, isActive && styles.langChipLabelActive]}>
+                  {lang.label}
+                </Text>
+                {isActive && (
+                  <MaterialCommunityIcons name="check-circle" size={16} color="#FFF" />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
       {/* ── Voice Explain Button ────────────────────────────────── */}
       <TouchableOpacity
         style={[styles.voiceBtn, speaking && styles.voiceBtnActive]}
@@ -902,12 +1022,14 @@ export default function AIDashboard() {
           size={24}
           color="#FFF"
         />
-        <View style={{ marginLeft: 12 }}>
+        <View style={{ marginLeft: 12, flex: 1 }}>
           <Text style={styles.voiceBtnTitle}>
             {speaking ? "Tap to Stop" : "Voice Explain"}
           </Text>
           <Text style={styles.voiceBtnSub}>
-            {speaking ? "Speaking in English..." : "AI reads your results aloud"}
+            {speaking
+              ? `Speaking in ${selectedLang.label}...`
+              : `AI reads your results in ${selectedLang.label}`}
           </Text>
         </View>
       </TouchableOpacity>
@@ -1316,7 +1438,7 @@ export default function AIDashboard() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.uploadAnotherBtn, { flex: 1, backgroundColor: "#F1F5F9", borderRadius: 16, paddingVertical: 14, flexDirection: "row", justifyContent: "center", gap: 8 }]}
-            onPress={() => { Speech.stop(); navigation.navigate("UploadReport"); }}
+            onPress={() => { sarvamStop(); navigation.navigate("UploadReport"); }}
           >
             <MaterialCommunityIcons name="upload" size={18} color="#64748B" />
             <Text style={[styles.uploadAnotherText, { color: "#64748B" }]}>New Report</Text>
@@ -1439,7 +1561,77 @@ const styles = StyleSheet.create({
   },
   metricsCountText: { color: "#8B5CF6", fontWeight: "700", fontSize: 12 },
 
-  // Voice button
+  // Language selector
+  langRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 16,
+    marginBottom: 8,
+  },
+  langSelector: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F5F3FF",
+    borderWidth: 1,
+    borderColor: "#DDD6FE", // Correct theme color
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+  },
+  langSelectorText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#7C3AED",
+  },
+  langHint: {
+    fontSize: 11,
+    color: "#94A3B8",
+    fontWeight: "600",
+  },
+  langPickerContainer: {
+    backgroundColor: "#FFF",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 16,
+    padding: 8,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+  },
+  langChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    gap: 6,
+  },
+  langChipActive: {
+    backgroundColor: "#8B5CF6",
+    borderColor: "#8B5CF6",
+  },
+  langChipFlag: {
+    fontSize: 14,
+  },
+  langChipLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#475569",
+  },
+  langChipLabelActive: {
+    color: "#FFF",
+  },
   voiceBtn: {
     flexDirection: "row",
     alignItems: "center",

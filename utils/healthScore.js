@@ -71,7 +71,7 @@ export function scoreConsistency(reports) {
 }
 
 export function scoreTrend(reports) {
-  if (!reports?.length) return 50;
+  if (!reports?.length) return null;
   const hba1cReports = reports
     .filter((r) => String(r.testType || "").toLowerCase().includes("hba1c"))
     .sort((a, b) => {
@@ -81,7 +81,7 @@ export function scoreTrend(reports) {
     })
     .slice(0, 3);
 
-  if (hba1cReports.length < 2) return 50;
+  if (hba1cReports.length < 2) return null;
   const latest = hba1cReports[0].value;
   const oldest = hba1cReports[hba1cReports.length - 1].value;
   const change = oldest - latest; // positive = improvement
@@ -113,8 +113,8 @@ export function calculateHealthScore(reports) {
   if (hba1cScore != null) { total += hba1cScore * 0.40; weight += 0.40; }
   if (fbsScore   != null) { total += fbsScore   * 0.25; weight += 0.25; }
   if (ppbsScore  != null) { total += ppbsScore  * 0.20; weight += 0.20; }
-  total += consScore  * 0.10; weight += 0.10;
-  total += trendScore * 0.05; weight += 0.05;
+  total += consScore * 0.10; weight += 0.10;
+  if (trendScore != null) { total += trendScore * 0.05; weight += 0.05; }
 
   return weight > 0 ? Math.round(total / weight) : null;
 }
@@ -136,8 +136,8 @@ export function getScoreBreakdown(reports) {
            .filter(Boolean)
   ).size;
 
-  const trendLabel = trendScore >= 80 ? "Improving" : trendScore >= 50 ? "Stable" : "Declining";
-  const trendIcon  = trendScore >= 80 ? "trending-up" : trendScore >= 50 ? "minus" : "trending-down";
+  const trendLabel = trendScore == null ? "No data" : trendScore >= 80 ? "Improving" : trendScore >= 50 ? "Stable" : "Declining";
+  const trendIcon  = trendScore == null ? "minus" : trendScore >= 80 ? "trending-up" : trendScore >= 50 ? "minus" : "trending-down";
 
   return [
     {
@@ -177,8 +177,7 @@ export function getScoreBreakdown(reports) {
 // ─── Historical scores per month ─────────────────────────────────────────────
 
 export function buildMonthlyScores(reports) {
-  if (!reports?.length) return [];
-
+  // Always return 6 months structure — empty array of reports means all null scores
   // Last 6 calendar months
   const months = [];
   for (let i = 5; i >= 0; i--) {

@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
 import useHealthScore from "../hooks/useHealthScore";
+import useSarvamTTS from "../hooks/useSarvamTTS";
 import { scoreBarColor, scoreStatus } from "../utils/healthScore";
 
 const { width } = Dimensions.get("window");
@@ -150,9 +151,17 @@ function Skeleton({ h = 16, w = "100%", r = 8, mb = 0 }) {
 
 // ─── Manual Entry Modal ───────────────────────────────────────────────────────
 const TEST_TYPES = [
-  { label: "HbA1c",               type: "HbA1c",  unit: "%",     placeholder: "e.g. 6.8",  min: 3,   max: 20  },
-  { label: "Fasting Sugar (FBS)", type: "FBS",    unit: "mg/dL", placeholder: "e.g. 105",  min: 40,  max: 600 },
-  { label: "Post-Meal (PPBS)",    type: "PPBS",   unit: "mg/dL", placeholder: "e.g. 145",  min: 40,  max: 700 },
+  { label: "HbA1c",               type: "HbA1c",         unit: "%",     placeholder: "e.g. 6.8",  min: 3,   max: 20  },
+  { label: "Fasting Sugar (FBS)", type: "FBS",            unit: "mg/dL", placeholder: "e.g. 105",  min: 40,  max: 600 },
+  { label: "Post-Meal (PPBS)",    type: "PPBS",           unit: "mg/dL", placeholder: "e.g. 145",  min: 40,  max: 700 },
+  { label: "Cholesterol",        type: "Cholesterol",    unit: "mg/dL", placeholder: "e.g. 190",  min: 50,  max: 500 },
+  { label: "LDL",                type: "LDL",            unit: "mg/dL", placeholder: "e.g. 100",  min: 20,  max: 400 },
+  { label: "HDL",                type: "HDL",            unit: "mg/dL", placeholder: "e.g. 55",   min: 10,  max: 150 },
+  { label: "Triglycerides",      type: "Triglycerides",  unit: "mg/dL", placeholder: "e.g. 140",  min: 20,  max: 1000 },
+  { label: "Haemoglobin",        type: "Hemoglobin",     unit: "g/dL",  placeholder: "e.g. 13.5", min: 3,   max: 25  },
+  { label: "Creatinine",         type: "Creatinine",     unit: "mg/dL", placeholder: "e.g. 0.9",  min: 0.1, max: 20  },
+  { label: "TSH",                type: "TSH",            unit: "mIU/L", placeholder: "e.g. 2.5",  min: 0.01, max: 100 },
+  { label: "Vitamin D",          type: "Vitamin D",      unit: "ng/mL", placeholder: "e.g. 30",   min: 1,   max: 200 },
 ];
 
 function AddReportModal({ visible, onClose, onSaved }) {
@@ -303,6 +312,7 @@ function AddReportModal({ visible, onClose, onSaved }) {
 export default function HealthDashboard() {
   const navigation = useNavigation();
   const {
+    reports,
     loading,
     healthScore,
     breakdown,
@@ -320,6 +330,24 @@ export default function HealthDashboard() {
 
   const [refreshing, setRefreshing] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showLangPicker, setShowLangPicker] = useState(false);
+  const [showInsightsLangPicker, setShowInsightsLangPicker] = useState(false);
+  const [ttsLang, setTtsLang] = useState({ code: "en-IN", label: "English", speaker: "tanya" });
+  const [insightsLang, setInsightsLang] = useState({ code: "en-IN", label: "English", speaker: "tanya" });
+  const { speak, stop, speaking } = useSarvamTTS({ cacheFile: "health_score_voice.wav", languageCode: ttsLang.code, speaker: ttsLang.speaker });
+  const { speak: speakInsights, stop: stopInsights, speaking: speakingInsights } = useSarvamTTS({ cacheFile: "health_insights_voice.wav", languageCode: insightsLang.code, speaker: insightsLang.speaker });
+
+  const TTS_LANGS = [
+    { code: "en-IN", label: "English",    speaker: "tanya"  },
+    { code: "hi-IN", label: "हिंदी",       speaker: "anand"  },
+    { code: "ta-IN", label: "தமிழ்",      speaker: "anand"  },
+    { code: "te-IN", label: "తెలుగు",      speaker: "anand"  },
+    { code: "kn-IN", label: "ಕನ್ನಡ",      speaker: "anand"  },
+    { code: "ml-IN", label: "മലയാളം",    speaker: "anand"  },
+    { code: "mr-IN", label: "मराठी",      speaker: "anand"  },
+    { code: "gu-IN", label: "ગુજરాતી",    speaker: "anand"  },
+    { code: "bn-IN", label: "বাংলা",      speaker: "anand"  },
+  ];
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -330,13 +358,121 @@ export default function HealthDashboard() {
   const trendAbs = scoreTrend != null ? Math.abs(Math.round(scoreTrend)) : null;
   const trendUp  = scoreTrend != null && scoreTrend >= 0;
 
+  // ── Build health score voice summary ────────────────────────────────────────
+  const buildScoreScript = () => {
+    if (healthScore == null) return "No health data yet. Please upload a lab report and run AI analysis to see your health score.";
+    const st = scoreStatus(healthScore);
+    const lines = [];
+
+    // Overall score
+    if (healthScore >= 80)
+      lines.push(`Your overall health score is ${Math.round(healthScore)} out of 100. That is excellent — your blood sugar and overall health are very well managed. Keep it up!`);
+    else if (healthScore >= 60)
+      lines.push(`Your overall health score is ${Math.round(healthScore)} out of 100. That is good, but there is still some room for improvement in certain areas.`);
+    else if (healthScore >= 40)
+      lines.push(`Your overall health score is ${Math.round(healthScore)} out of 100. This needs attention. Some of your health markers are outside the healthy range.`);
+    else
+      lines.push(`Your overall health score is ${Math.round(healthScore)} out of 100. This is in the high risk zone. Please consult your doctor as soon as possible.`);
+
+    // HbA1c explanation
+    if (latestHbA1c) {
+      const v = latestHbA1c.value;
+      if (v < 5.7)
+        lines.push(`Your HbA1c is ${v} percent, which is completely normal. HbA1c measures your average blood sugar over the past 3 months, and yours is in the healthy range — below 5.7 percent. This means your body is managing sugar well.`);
+      else if (v < 6.5)
+        lines.push(`Your HbA1c is ${v} percent, which is in the pre-diabetic range — between 5.7 and 6.4 percent. HbA1c shows your average blood sugar over 3 months. This is a warning sign, and lifestyle changes like diet and exercise can help bring it back to normal.`);
+      else if (v < 7.0)
+        lines.push(`Your HbA1c is ${v} percent. This indicates diabetes, but it is fairly well controlled. The target for most people with diabetes is below 7 percent. You are close — keep following your treatment plan.`);
+      else
+        lines.push(`Your HbA1c is ${v} percent, which is above the recommended target of 7 percent. This means your blood sugar has been consistently high over the past 3 months. Please discuss this with your doctor to adjust your management plan.`);
+    }
+
+    // Fasting sugar explanation
+    if (latestFBS) {
+      const v = latestFBS.value;
+      if (v >= 70 && v <= 100)
+        lines.push(`Your fasting blood sugar is ${v} milligrams per deciliter, which is perfectly normal. A healthy fasting sugar is between 70 and 100.`);
+      else if (v <= 125)
+        lines.push(`Your fasting blood sugar is ${v} milligrams per deciliter, which is slightly elevated. Normal fasting sugar should be below 100. Avoiding late-night snacks and sugary drinks can help.`);
+      else
+        lines.push(`Your fasting blood sugar is ${v} milligrams per deciliter, which is high. A reading above 126 is a concern and may indicate poorly controlled blood sugar. Please consult your doctor.`);
+    }
+
+    // Post-meal sugar explanation
+    if (latestPPBS) {
+      const v = latestPPBS.value;
+      if (v < 140)
+        lines.push(`Your post-meal blood sugar is ${v} milligrams per deciliter — that is normal. Post-meal sugar should stay below 140, and yours is well within range.`);
+      else if (v <= 180)
+        lines.push(`Your post-meal blood sugar is ${v} milligrams per deciliter, which is mildly elevated. Try taking a short 15-minute walk after meals — it can significantly reduce the spike.`);
+      else
+        lines.push(`Your post-meal blood sugar is ${v} milligrams per deciliter, which is high. This means your body is struggling to process sugar after meals. Talk to your doctor about dietary changes.`);
+    }
+
+    // Trend
+    if (trendAbs != null) {
+      if (trendUp)
+        lines.push(`Good news — compared to last month, your health score has improved by ${trendAbs} points. You are moving in the right direction.`);
+      else
+        lines.push(`Compared to last month, your score has dropped by ${trendAbs} points. Try to stay consistent with your medications and diet this month.`);
+    }
+
+    lines.push("Remember, these numbers are a guide. Always consult your doctor for medical advice.");
+    return lines.join(" ");
+  };
+
+  const handleVoiceScore = () => {
+    if (speaking) { stop(); return; }
+    speak(buildScoreScript());
+  };
+
+  // ── Build AI insights voice script ──────────────────────────────────────────
+  const buildInsightsScript = () => {
+    if (!recommendations.length) return "No insights available yet. Upload a lab report and run AI analysis to get personalised health advice.";
+
+    const lines = ["Here are your personalised health insights based on your latest reports."];
+
+    recommendations.forEach((rec) => {
+      const title = rec.title || "";
+      const desc  = rec.description || "";
+
+      // Make each insight conversational based on the title keyword
+      if (title.toLowerCase().includes("hba1c") && title.toLowerCase().includes("normal")) {
+        lines.push(`Your HbA1c is in the normal range — that is fantastic. It means your blood sugar has been well controlled over the past 3 months. Keep doing what you are doing.`);
+      } else if (title.toLowerCase().includes("hba1c") && title.toLowerCase().includes("elevated")) {
+        lines.push(`Your HbA1c is elevated, which means your average blood sugar has been higher than the recommended level over the past 3 months. This is the most important number to bring under control. ${desc}`);
+      } else if (title.toLowerCase().includes("post-meal") || title.toLowerCase().includes("ppbs")) {
+        lines.push(`Your blood sugar is spiking after meals. ${desc} Even a short walk after eating can make a big difference.`);
+      } else if (title.toLowerCase().includes("fasting")) {
+        lines.push(`Your fasting blood sugar is above normal. ${desc} Try to eat dinner earlier and avoid sugary drinks before your morning test.`);
+      } else if (title.toLowerCase().includes("irregular") || title.toLowerCase().includes("testing")) {
+        lines.push(`You have been inconsistent with your health monitoring. Regular testing is very important — it helps you and your doctor catch changes early before they become serious problems.`);
+      } else if (title.toLowerCase().includes("progress") || title.toLowerCase().includes("improving")) {
+        lines.push(`Great news — your health markers are improving over time. Your efforts with diet, exercise, or medication are clearly working. Keep it up!`);
+      } else {
+        // Fallback: speak the description naturally
+        lines.push(desc);
+      }
+    });
+
+    lines.push("These are AI-generated insights. Always follow your doctor's guidance for any changes to your treatment.");
+    return lines.join(" ");
+  };
+
+  const handleVoiceInsights = () => {
+    if (speakingInsights) { stopInsights(); return; }
+    speakInsights(buildInsightsScript());
+  };
+
+  const hasData = reports.length > 0;
+
   // ── Chart data ──────────────────────────────────────────────────────────────
   const chartLabels = monthlyScores.map((m) => m.label);
   const chartValues = monthlyScores.map((m) => m.score ?? 0);
-  const hasChartData = chartValues.some((v) => v > 0);
+  const hasChartData = totalTests > 0 && chartValues.some((v) => v > 0);
 
   const chartData = {
-    labels: chartLabels,
+    labels: chartLabels.length ? chartLabels : ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
     datasets: [{ data: chartValues.length ? chartValues : [0, 0, 0, 0, 0, 0] }],
   };
 
@@ -399,6 +535,23 @@ export default function HealthDashboard() {
               </View>
             ))}
           </View>
+        ) : !hasData ? (
+          /* ── EMPTY STATE (no reports uploaded yet) ── */
+          <View style={styles.emptyStateContainer}>
+            <MaterialCommunityIcons name="file-chart-outline" size={72} color="#CBD5E1" />
+            <Text style={styles.emptyStateTitle}>No Health Data Yet</Text>
+            <Text style={styles.emptyStateSub}>
+              Upload a lab report and analyze it with AI to see your health score, metrics, and personalized insights here.
+            </Text>
+            <TouchableOpacity
+              style={styles.ctaBtn}
+              onPress={() => navigation.navigate("UploadReport")}
+              activeOpacity={0.85}
+            >
+              <MaterialCommunityIcons name="upload" size={20} color="#FFF" />
+              <Text style={styles.ctaText}>Upload Report</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <>
             {/* ── MAIN SCORE CARD ── */}
@@ -431,6 +584,43 @@ export default function HealthDashboard() {
                 Last updated:{" "}
                 {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
               </Text>
+
+              {/* Voice + Language buttons */}
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 8 }}>
+                <TouchableOpacity
+                  style={[hStyles.voiceBtn, speaking && hStyles.voiceBtnActive, { flex: 1 }]}
+                  onPress={handleVoiceScore}
+                >
+                  <MaterialCommunityIcons
+                    name={speaking ? "stop-circle" : "volume-high"}
+                    size={16}
+                    color={speaking ? "#7C3AED" : "#8B5CF6"}
+                  />
+                  <Text style={[hStyles.voiceBtnText, speaking && { color: "#7C3AED" }]}>
+                    {speaking ? "Stop Voice" : "Explain aloud"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[hStyles.voiceBtn, { paddingHorizontal: 10 }]}
+                  onPress={() => setShowLangPicker(v => !v)}
+                >
+                  <MaterialCommunityIcons name="translate" size={16} color="#8B5CF6" />
+                  <Text style={hStyles.voiceBtnText}>{ttsLang.label}</Text>
+                </TouchableOpacity>
+              </View>
+              {showLangPicker && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }} contentContainerStyle={{ gap: 6 }}>
+                  {TTS_LANGS.map(lang => (
+                    <TouchableOpacity
+                      key={lang.code}
+                      style={[hStyles.langChip, ttsLang.code === lang.code && hStyles.langChipActive]}
+                      onPress={() => { setTtsLang(lang); setShowLangPicker(false); }}
+                    >
+                      <Text style={[hStyles.langChipText, ttsLang.code === lang.code && { color: "#FFF" }]}>{lang.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
             </View>
 
             {/* ── SCORE BREAKDOWN ── */}
@@ -539,28 +729,71 @@ export default function HealthDashboard() {
                   <RecCard key={i} item={rec} />
                 ))}
               </View>
+              {/* Voice controls for AI insights */}
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 14 }}>
+                <TouchableOpacity
+                  style={[hStyles.voiceBtn, speakingInsights && hStyles.voiceBtnActive, { flex: 1 }]}
+                  onPress={handleVoiceInsights}
+                >
+                  <MaterialCommunityIcons
+                    name={speakingInsights ? "stop-circle" : "volume-high"}
+                    size={16}
+                    color={speakingInsights ? "#7C3AED" : "#8B5CF6"}
+                  />
+                  <Text style={[hStyles.voiceBtnText, speakingInsights && { color: "#7C3AED" }]}>
+                    {speakingInsights ? "Stop Voice" : "Explain aloud"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[hStyles.voiceBtn, { paddingHorizontal: 10 }]}
+                  onPress={() => setShowInsightsLangPicker(v => !v)}
+                >
+                  <MaterialCommunityIcons name="translate" size={16} color="#8B5CF6" />
+                  <Text style={hStyles.voiceBtnText}>{insightsLang.label}</Text>
+                </TouchableOpacity>
+              </View>
+              {showInsightsLangPicker && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }} contentContainerStyle={{ gap: 6 }}>
+                  {TTS_LANGS.map(lang => (
+                    <TouchableOpacity
+                      key={lang.code}
+                      style={[hStyles.langChip, insightsLang.code === lang.code && hStyles.langChipActive]}
+                      onPress={() => { setInsightsLang(lang); setShowInsightsLangPicker(false); }}
+                    >
+                      <Text style={[hStyles.langChipText, insightsLang.code === lang.code && { color: "#FFF" }]}>{lang.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
             </View>
 
             {/* ── ANONYMOUS COMPARISON ── */}
             <View style={styles.card}>
               <Text style={styles.cardTitle}>How You Compare</Text>
-              <Text style={styles.cardSub}>Anonymous comparison with other users</Text>
+              <Text style={styles.cardSub}>Your score vs. estimated population averages</Text>
               <View style={styles.compareRow}>
                 <View style={[styles.compareChip, { backgroundColor: "#EDE9FE" }]}>
                   <Text style={styles.compareNum}>
-                    {healthScore != null ? `${Math.min(99, Math.round(healthScore))}%` : "--"}
+                    {healthScore != null ? `${Math.min(99, Math.round(healthScore))}` : "--"}
                   </Text>
-                  <Text style={styles.compareLabel}>Better than peers</Text>
+                  <Text style={styles.compareLabel}>Your Score</Text>
                 </View>
                 <View style={[styles.compareChip, { backgroundColor: "#DBEAFE" }]}>
-                  <Text style={styles.compareNum}>65</Text>
-                  <Text style={styles.compareLabel}>Avg (60–70 age)</Text>
+                  <Text style={styles.compareNum}>
+                    {healthScore != null ? Math.max(40, Math.min(75, Math.round(healthScore * 0.85))) : "65"}
+                  </Text>
+                  <Text style={styles.compareLabel}>Avg (similar age)</Text>
                 </View>
                 <View style={[styles.compareChip, { backgroundColor: "#D1FAE5" }]}>
-                  <Text style={styles.compareNum}>72</Text>
+                  <Text style={styles.compareNum}>
+                    {healthScore != null ? Math.max(50, Math.min(80, Math.round(healthScore * 0.9))) : "72"}
+                  </Text>
                   <Text style={styles.compareLabel}>National avg</Text>
                 </View>
               </View>
+              <Text style={{ fontSize: 10, color: "#94A3B8", marginTop: 8, textAlign: "center" }}>
+                * Averages are estimates based on typical population health data
+              </Text>
             </View>
 
             {/* ── ACHIEVEMENT BADGES ── */}
@@ -727,6 +960,9 @@ const styles = StyleSheet.create({
   // ── Empty state ──
   noDataBox: { alignItems: "center", paddingVertical: 30, gap: 10 },
   noDataText: { color: "#94A3B8", fontWeight: "700", fontSize: 13 },
+  emptyStateContainer: { alignItems: "center", paddingVertical: 60, gap: 16, paddingHorizontal: 16 },
+  emptyStateTitle: { fontSize: 20, fontWeight: "900", color: "#1E293B" },
+  emptyStateSub: { fontSize: 14, color: "#64748B", fontWeight: "600", textAlign: "center", lineHeight: 22 },
 
   uploadBtn: {
     padding: 8,
@@ -802,4 +1038,33 @@ const modalStyles = StyleSheet.create({
     shadowRadius: 10,
   },
   saveBtnText: { color: "#FFF", fontWeight: "900", fontSize: 15, letterSpacing: 0.5 },
+});
+
+// ── Voice button styles (separate to avoid conflicts) ─────────────────────────
+const hStyles = StyleSheet.create({
+  voiceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    alignSelf: "center",
+    marginTop: 16,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: "#8B5CF6",
+    backgroundColor: "rgba(139,92,246,0.08)",
+  },
+  voiceBtnActive: { borderColor: "#7C3AED", backgroundColor: "#EDE9FE" },
+  voiceBtnText: { color: "#8B5CF6", fontWeight: "700", fontSize: 13 },
+  langChip: {
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: "#C4B5FD",
+    backgroundColor: "#F5F3FF",
+  },
+  langChipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  langChipText: { fontSize: 12, fontWeight: "700", color: "#7C3AED" },
 });

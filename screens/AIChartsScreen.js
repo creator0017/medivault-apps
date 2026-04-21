@@ -2,9 +2,12 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
 import { collection, getDocs, limit, orderBy, query } from "firebase/firestore";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -18,6 +21,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebaseConfig";
+import useSarvamTTS from "../hooks/useSarvamTTS";
 
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 
@@ -112,15 +116,50 @@ export default function AIChatScreen({ navigation, route }) {
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportPicker, setShowReportPicker] = useState(false);
   const [error, setError] = useState("");
+  // Voice states
+  const [speakingMsgId, setSpeakingMsgId] = useState(null); // which AI msg is playing
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [showLangPicker, setShowLangPicker] = useState(false);
+  const [ttsLang, setTtsLang] = useState({ code: "en-IN", label: "English", speaker: "tanya" });
+  const recordingRef = useRef(null);
+
+  const TTS_LANGS = [
+    { code: "en-IN", label: "English",    speaker: "tanya"  },
+    { code: "hi-IN", label: "हिंदी",       speaker: "anand"  },
+    { code: "ta-IN", label: "தமிழ்",      speaker: "anand"  },
+    { code: "te-IN", label: "తెలుగు",      speaker: "anand"  },
+    { code: "kn-IN", label: "ಕನ್ನಡ",      speaker: "anand"  },
+    { code: "ml-IN", label: "മലയാളം",    speaker: "anand"  },
+    { code: "mr-IN", label: "मराठी",      speaker: "anand"  },
+    { code: "gu-IN", label: "ગુજરાતી",    speaker: "anand"  },
+    { code: "bn-IN", label: "বাংলা",      speaker: "anand"  },
+  ];
 
   const flatListRef = useRef(null);
   const chatRef = useRef(null);
+
+  // Sarvam TTS — one instance, shared across all messages
+  const { speak: sarvamSpeak, stop: sarvamStop, speaking: sarvamSpeaking } = useSarvamTTS({
+    cacheFile: "chat_voice.wav",
+    languageCode: ttsLang.code,
+    speaker: ttsLang.speaker,
+  });
 
   const firstName = userData?.fullName?.split(" ")[0] || "there";
 
   // ── Load context on mount ────────────────────────────────────────────────────
   useEffect(() => {
     if (isFocused) {
+      // BUG-16 Fix: If navigated from AI History with a specific report, use it directly
+      const preloadReport = route?.params?.preloadReport;
+      if (preloadReport) {
+        setReports([preloadReport]);
+        setSelectedReport(preloadReport);
+        initWelcome(preloadReport);
+        setLoadingContext(false);
+        return;
+      }
       loadContext();
     }
   }, [userData?.uid, isFocused]);
@@ -231,7 +270,7 @@ export default function AIChatScreen({ navigation, route }) {
     const medText = (report.medications || []).map(m => `  - ${typeof m === "string" ? m : m.name}`).join("\n");
     const algText = (report.allergies || []).map(a => `  - ${typeof a === "string" ? a : a.name}`).join("\n");
 
-    return `PATIENT: ${report.patient || userData?.fullName || "Unknown"} | Age: ${report.age || "?"} | Gender: ${report.gender || "?"} | Blood Group: ${report.bloodGroup || "?"}
+    return `PATIENT: ${userData?.fullName || report.patient || "Unknown"} | Age: ${report.age || "?"} | Gender: ${report.gender || "?"} | Blood Group: ${report.bloodGroup || "?"}
 LAB: ${report.lab || "?"} | DATE: ${report.date || "?"}
 
 BLOOD TEST RESULTS:
@@ -268,22 +307,22 @@ ${algText || "  (none)"}`;
       const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
       // Build system message with health context
-      const systemPrompt = `You are Arogyasathi AI — a friendly, expert medical assistant for Indian patients.
-Rules:
-- Always answer in simple, clear English suitable for all ages including elderly patients
-- Use bullet points and numbered lists for clarity
-- Always mention normal ranges when discussing test values
-- End each response with a brief reminder to consult their doctor for treatment decisions
-- Never give specific medication dosage advice
-- Be warm, reassuring, and practical
-- Answer the user's question directly and completely. Do not give generic responses or ask them to upload reports.
-- If you don't have specific patient data, provide general health information based on medical knowledge.
+      const systemPrompt = `You are Arogyasathi AI — a concise health assistant for Indian patients.
+
+STRICT RULES — follow every rule, no exceptions:
+1. MAX 3 sentences per answer. Never more.
+2. Always use the patient's real number from the report. Example: "Your HbA1c is 8.2% — that is high (normal: below 5.7%)."
+3. If listing items, use at most 2 bullet points. No numbered lists.
+4. Zero jargon — use words a school student understands.
+5. Never say "consult your doctor" unless a value is in dangerous range.
+6. Never repeat the question. Start your answer directly.
+7. If someone asks many things, answer only the most important one in 3 sentences.
 
 Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport)}`;
 
-      let model = genAI.getGenerativeModel({ 
-        model: "gemini-2.5-flash",
-        systemInstruction: systemPrompt 
+      let model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",  // Stable, GA model with vision support
+        systemInstruction: systemPrompt
       });
 
       // Include the NEW user message which is not in the 'messages' closure yet
@@ -302,18 +341,19 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
       try {
         response = await model.generateContent({
           contents: contents,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+          generationConfig: { temperature: 0.3, maxOutputTokens: 180 }
         });
       } catch (primaryErr) {
-        if (primaryErr?.message?.includes("503") || primaryErr?.message?.includes("demand") || primaryErr?.message?.includes("404")) {
-          console.warn("Gemini 2.5 is congested or unavailable. Falling back to gemini-1.5-flash...");
-          model = genAI.getGenerativeModel({
-             model: "gemini-1.5-flash",
-             systemInstruction: systemPrompt
-          });
+        const errMsg = primaryErr?.message || "";
+        const isTemporary = errMsg.includes("503") || errMsg.includes("429") ||
+          errMsg.includes("overloaded") || errMsg.includes("demand") || errMsg.includes("unavailable");
+        if (isTemporary) {
+          // Gemini is temporarily overloaded — wait 2s and retry once with the same model
+          console.warn("gemini-2.5-flash overloaded. Retrying in 2s...");
+          await new Promise(resolve => setTimeout(resolve, 2000));
           response = await model.generateContent({
             contents: contents,
-            generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+            generationConfig: { temperature: 0.3, maxOutputTokens: 180 }
           });
         } else {
           throw primaryErr;
@@ -337,6 +377,85 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
     }
   };
 
+  // ── Speak an AI message via Sarvam TTS ─────────────────────────────────────
+  const speakMessage = (msg) => {
+    if (speakingMsgId === msg.id) {
+      sarvamStop();
+      setSpeakingMsgId(null);
+      return;
+    }
+    setSpeakingMsgId(msg.id);
+    sarvamSpeak(msg.text, { silent: false });
+    // Clear indicator when TTS finishes (poll sarvamSpeaking)
+  };
+
+  // Sync speakingMsgId when Sarvam stops on its own
+  if (!sarvamSpeaking && speakingMsgId) setSpeakingMsgId(null);
+
+  // ── Mic recording → Sarvam STT → send as message ───────────────────────────
+  const startRecording = async () => {
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission required", "Microphone access is needed for voice input.");
+        return;
+      }
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recordingRef.current = recording;
+      setIsRecording(true);
+    } catch (err) {
+      Alert.alert("Error", "Could not start recording.");
+    }
+  };
+
+  const stopRecordingAndTranscribe = async () => {
+    if (!recordingRef.current) return;
+    setIsRecording(false);
+    setTranscribing(true);
+    try {
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+
+      const apiKey = process.env.EXPO_PUBLIC_SARVAM_API_KEY;
+      if (!apiKey) throw new Error("Sarvam API key missing");
+
+      // Read file as base64
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // Sarvam STT (speech-to-text)
+      const res = await fetch("https://api.sarvam.ai/speech-to-text", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-subscription-key": apiKey,
+        },
+        body: JSON.stringify({
+          model: "saarika:v2",
+          audio: base64,
+          language_code: ttsLang.code,
+        }),
+      });
+      const data = await res.json();
+      const transcript = data?.transcript || data?.text || "";
+      if (transcript.trim()) {
+        setInput(transcript.trim());
+      } else {
+        Alert.alert("Didn't catch that", "Please try speaking again clearly.");
+      }
+    } catch (err) {
+      console.error("STT error:", err);
+      Alert.alert("Voice error", "Could not transcribe. Please type your question.");
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
   // ── Switch report ────────────────────────────────────────────────────────────
   const switchReport = (report) => {
     setSelectedReport(report);
@@ -354,6 +473,7 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
   const renderItem = ({ item }) => {
     const isAI = item.role === "ai";
     const isError = item.role === "error";
+    const isPlaying = speakingMsgId === item.id;
 
     if (isError) {
       return (
@@ -371,14 +491,33 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
             <MaterialCommunityIcons name="robot" size={16} color="#8B5CF6" />
           </View>
         )}
-        <View style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}>
-          {isAI
-            ? <FormattedText text={item.text} style={styles.bubbleTextAI} />
-            : <Text style={styles.bubbleTextUser}>{item.text}</Text>
-          }
-          <Text style={[styles.timeText, { color: isAI ? "#94A3B8" : "rgba(255,255,255,0.6)" }]}>
-            {new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-          </Text>
+        <View style={{ maxWidth: "80%", alignItems: isAI ? "flex-start" : "flex-end" }}>
+          <View style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}>
+            {isAI
+              ? <FormattedText text={item.text} style={styles.bubbleTextAI} />
+              : <Text style={styles.bubbleTextUser}>{item.text}</Text>
+            }
+            <Text style={[styles.timeText, { color: isAI ? "#94A3B8" : "rgba(255,255,255,0.6)" }]}>
+              {new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+            </Text>
+          </View>
+
+          {/* Speaker button for AI messages */}
+          {isAI && (
+            <TouchableOpacity
+              style={[styles.speakBtn, isPlaying && styles.speakBtnActive]}
+              onPress={() => speakMessage(item)}
+            >
+              <MaterialCommunityIcons
+                name={isPlaying ? "stop-circle" : "volume-high"}
+                size={13}
+                color={isPlaying ? "#7C3AED" : "#8B5CF6"}
+              />
+              <Text style={[styles.speakBtnText, isPlaying && { color: "#7C3AED" }]}>
+                {isPlaying ? "Stop" : "Listen"}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -411,13 +550,39 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
               : "No report loaded · general mode"}
           </Text>
         </View>
-        <TouchableOpacity
-          style={[styles.headerBtn, { backgroundColor: "#F5F3FF" }]}
-          onPress={() => setShowReportPicker(!showReportPicker)}
-        >
-          <MaterialCommunityIcons name="swap-horizontal" size={20} color="#8B5CF6" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <TouchableOpacity
+            style={[styles.headerBtn, { backgroundColor: "#F0FDF4" }]}
+            onPress={() => { setShowLangPicker(v => !v); setShowReportPicker(false); }}
+          >
+            <MaterialCommunityIcons name="translate" size={20} color="#10B981" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.headerBtn, { backgroundColor: "#F5F3FF" }]}
+            onPress={() => { setShowReportPicker(!showReportPicker); setShowLangPicker(false); }}
+          >
+            <MaterialCommunityIcons name="swap-horizontal" size={20} color="#8B5CF6" />
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* ── Language picker panel ── */}
+      {showLangPicker && (
+        <View style={styles.pickerPanel}>
+          <Text style={styles.pickerTitle}>VOICE LANGUAGE</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }} contentContainerStyle={{ gap: 8 }}>
+            {TTS_LANGS.map(lang => (
+              <TouchableOpacity
+                key={lang.code}
+                style={[styles.reportChip, ttsLang.code === lang.code && styles.reportChipActive]}
+                onPress={() => { setTtsLang(lang); setShowLangPicker(false); }}
+              >
+                <Text style={[styles.reportChipText, ttsLang.code === lang.code && { color: "#FFF" }]}>{lang.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* ── Report context picker ── */}
       {showReportPicker && (
@@ -515,16 +680,38 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 10}
       >
+        {/* Transcribing indicator */}
+        {transcribing && (
+          <View style={styles.transcribingBar}>
+            <ActivityIndicator size="small" color="#8B5CF6" />
+            <Text style={styles.transcribingText}>Converting voice to text…</Text>
+          </View>
+        )}
+
         <View style={styles.inputBar}>
+          {/* Mic button */}
+          <TouchableOpacity
+            style={[styles.micBtn, isRecording && styles.micBtnActive]}
+            onPress={isRecording ? stopRecordingAndTranscribe : startRecording}
+            disabled={transcribing || loading}
+          >
+            <MaterialCommunityIcons
+              name={isRecording ? "stop-circle" : "microphone"}
+              size={22}
+              color={isRecording ? "#EF4444" : "#8B5CF6"}
+            />
+          </TouchableOpacity>
+
           <TextInput
             style={styles.input}
             value={input}
             onChangeText={setInput}
-            placeholder="Ask about your health report…"
+            placeholder={isRecording ? "Recording… tap stop when done" : "Ask or tap mic to speak…"}
             placeholderTextColor="#94A3B8"
             multiline
             maxLength={600}
           />
+
           <TouchableOpacity
             style={[styles.sendBtn, (!input.trim() || loading) && styles.sendBtnDisabled]}
             onPress={() => sendMessage()}
@@ -536,6 +723,12 @@ Here is the patient's latest health data:\n\n${buildHealthContext(selectedReport
             }
           </TouchableOpacity>
         </View>
+        {isRecording && (
+          <View style={styles.recordingBar}>
+            <MaterialCommunityIcons name="record-circle" size={14} color="#EF4444" />
+            <Text style={styles.recordingText}>Recording… tap the mic button to stop</Text>
+          </View>
+        )}
         <Text style={styles.disclaimer}>AI responses are for information only · Always consult your doctor</Text>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -626,7 +819,6 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   bubble: {
-    maxWidth: "80%",
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -736,4 +928,56 @@ const styles = StyleSheet.create({
   },
   sendBtnDisabled: { backgroundColor: "#CBD5E1", elevation: 0, shadowOpacity: 0 },
   disclaimer: { fontSize: 10, color: "#94A3B8", textAlign: "center", paddingBottom: 8, backgroundColor: "#FFF" },
+
+  // ── Mic button ──
+  micBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#F5F3FF",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: "#DDD6FE",
+  },
+  micBtnActive: { backgroundColor: "#FEE2E2", borderColor: "#FECACA" },
+
+  // ── Speak button (below AI bubble) ──
+  speakBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: "#F5F3FF",
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    marginTop: 4,
+    alignSelf: "flex-start",
+  },
+  speakBtnActive: { backgroundColor: "#EDE9FE", borderColor: "#8B5CF6" },
+  speakBtnText: { fontSize: 11, fontWeight: "700", color: "#8B5CF6" },
+
+  // ── Recording indicator ──
+  recordingBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: "#FEF2F2",
+  },
+  recordingText: { fontSize: 12, color: "#EF4444", fontWeight: "600" },
+
+  // ── Transcribing indicator ──
+  transcribingBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: "#F5F3FF",
+  },
+  transcribingText: { fontSize: 12, color: "#8B5CF6", fontWeight: "600" },
 });

@@ -151,6 +151,18 @@ export default function LoginScreen({ navigation }) {
 
       if (userDoc.exists()) {
         const userData = userDoc.data();
+        // Repair: ensure publicProfiles exists (missing for users registered before family feature)
+        try {
+          const pubRef = doc(db, "publicProfiles", user.uid);
+          const pubDoc = await getDoc(pubRef);
+          if (!pubDoc.exists() && userData.patientId) {
+            await setDoc(pubRef, {
+              fullName: userData.fullName,
+              patientId: userData.patientId,
+              uid: user.uid,
+            });
+          }
+        } catch (_) {}
         if (userData.phoneVerified) {
           // Verified user — keep loading spinner while App.js switches to Home
           return;

@@ -13,11 +13,10 @@ import {
     updateDoc,
     where,
 } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { useCallback, useEffect, useState } from "react";
 import { Alert } from "react-native";
-import { db, functions, storage } from "../firebaseConfig";
+import { db, storage } from "../firebaseConfig";
 
 export const useEmergencyCard = (userId) => {
   const [cardData, setCardData] = useState(null);
@@ -46,6 +45,10 @@ export const useEmergencyCard = (userId) => {
               const share = shareSnap.data();
               if (share.isActive && share.expiresAt?.toMillis() > Date.now()) {
                 setShareUrl(`https://medvault-d2526.web.app/emergency/${data.lastShareToken}`);
+                // back-fill pdfUrl if old share stored shareUrl instead
+                if (!share.pdfUrl && share.shareUrl) {
+                  await updateDoc(shareRef, { pdfUrl: share.shareUrl });
+                }
               }
             }
           } catch (_) { /* non-fatal */ }
@@ -78,187 +81,153 @@ export const useEmergencyCard = (userId) => {
 
   // Auto-fill from lab reports
   const autoFillFromReports = useCallback(async () => {
-    if (!userId) return;
+    if (!userId) return { conditions: [], aiData: {}, hasUploadedReports: false };
+
+    // ── 1. Try latest AI analysis from aiAnalyses collection ──────────────────
+    let aiData = {
+      bloodGroup: "",
+      age: "",
+      medications: [],
+      allergies: [],
+      conditions: [],
+    };
+    let hasAiAnalysis = false;
 
     try {
-      const reportsRef = collection(db, "users", userId, "healthReports");
-      const q = query(reportsRef, orderBy("testDate", "desc"), limit(10));
-      const snapshot = await getDocs(q);
+      const aiAnalysisRef = collection(db, "users", userId, "aiAnalyses");
+      const aiQuery = query(aiAnalysisRef, orderBy("analyzedAt", "desc"), limit(1));
+      const aiSnapshot = await getDocs(aiQuery);
+      if (!aiSnapshot.empty) {
+        hasAiAnalysis = true;
+        const latestAi = aiSnapshot.docs[0].data();
 
-      const reports = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        aiData.bloodGroup = latestAi.bloodGroup || "";
+        aiData.age = latestAi.age ? String(latestAi.age).replace(/\D.*/, "") : "";
 
-      const latestHbA1c = reports.find((r) => r.testType === "HbA1c");
-      const latestFBS = reports.find((r) => r.testType === "FBS");
-      const latestPPBS = reports.find((r) => r.testType === "PPBS");
-
-      const newConditions = [];
-
-      if (latestHbA1c) {
-        const value = parseFloat(latestHbA1c.value);
-        const severity =
-          value >= 7.0 ? "Type 2 Diabetes (Active)" : "Pre-diabetes";
-        newConditions.push({
-          id: `auto_hba1c_${latestHbA1c.id}`,
-          title: severity,
-          subtitle: `HbA1c: ${latestHbA1c.value}%`,
-          history: `Last tested: ${latestHbA1c.testDate?.toDate().toLocaleDateString("en-IN") || "Unknown"}`,
-          type: "chart-line",
-          isAutoFilled: true,
-          sourceReportId: latestHbA1c.id,
-        });
+        if (Array.isArray(latestAi.conditions) && latestAi.conditions.length > 0) {
+          aiData.conditions = latestAi.conditions.map((c, idx) => ({
+            id: `ai_cond_${idx}`,
+            title: c.title || c.name || String(c) || "Condition",
+            subtitle: c.subtitle || c.description || "",
+            history: c.history || "Detected from uploaded lab report",
+            type: "chart-line",
+            isAutoFilled: true,
+          }));
+        }
+        if (Array.isArray(latestAi.medications) && latestAi.medications.length > 0) {
+          aiData.medications = latestAi.medications.map((med, idx) => ({
+            id: `ai_med_${idx}`,
+            name: typeof med === "string" ? med : med.name || String(med),
+            dose: med.dose || med.dosage || "As prescribed",
+          }));
+        }
+        if (Array.isArray(latestAi.allergies) && latestAi.allergies.length > 0) {
+          aiData.allergies = latestAi.allergies.map((a, idx) => ({
+            id: `ai_allergy_${idx}`,
+            name: typeof a === "string" ? a : a.name || String(a),
+            severity: a.severity || "Check with doctor",
+          }));
+        }
       }
+    } catch (error) {
+      console.error("Error fetching AI analysis:", error);
+    }
 
-      if (latestFBS) {
-        newConditions.push({
-          id: `auto_fbs_${latestFBS.id}`,
-          title: "Fasting Blood Sugar",
-          subtitle: `${latestFBS.value} mg/dL`,
-          history: `Normal range: 70-100 mg/dL`,
-          type: "water",
-          isAutoFilled: true,
-          sourceReportId: latestFBS.id,
-        });
-      }
-
-      if (latestPPBS) {
-        newConditions.push({
-          id: `auto_ppbs_${latestPPBS.id}`,
-          title: "Post-Meal Blood Sugar",
-          subtitle: `${latestPPBS.value} mg/dL`,
-          history: `Normal range: <140 mg/dL`,
-          type: "water",
-          isAutoFilled: true,
-          sourceReportId: latestPPBS.id,
-        });
-      }
-
-      // Fetch AI analysis data from user document
-      let aiData = {};
+    // ── 2. Fallback: check users.emergency.* (written on manual save) ─────────
+    if (!hasAiAnalysis) {
       try {
         const userRef = doc(db, "users", userId);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
-          const userData = userSnap.data();
-          aiData = {
-            bloodGroup: userData.emergency?.autoBloodGroup || "",
-            age: userData.emergency?.autoAge || "",
-            medications: userData.emergency?.autoMedications || [],
-            allergies: userData.emergency?.autoAllergies || [],
-            conditions: userData.emergency?.autoConditions || [],
-          };
-        }
-      } catch (error) {
-        console.error("Error fetching AI data:", error);
-      }
-
-      // Fetch latest AI analysis from aiAnalyses collection
-      try {
-        const aiAnalysisRef = collection(db, "users", userId, "aiAnalyses");
-        const aiQuery = query(aiAnalysisRef, orderBy("analyzedAt", "desc"), limit(1));
-        const aiSnapshot = await getDocs(aiQuery);
-        if (!aiSnapshot.empty) {
-          const latestAi = aiSnapshot.docs[0].data();
-          // Merge AI analysis data into aiData, preferring existing aiData fields
-          if (!aiData.bloodGroup && latestAi.bloodGroup) aiData.bloodGroup = latestAi.bloodGroup;
-          if (!aiData.age && latestAi.age) aiData.age = latestAi.age;
-          // Transform conditions
-          if (aiData.conditions.length === 0 && latestAi.conditions && latestAi.conditions.length > 0) {
-            aiData.conditions = latestAi.conditions.map((c, idx) => ({
-              id: `ai_cond_${idx}`,
-              title: c.title || c.name || "Condition",
-              subtitle: c.subtitle || c.description || "",
-              history: c.history || "Detected from uploaded lab report",
-              type: "chart-line",
-            }));
+          const uData = userSnap.data();
+          const em = uData.emergency || {};
+          if (em.autoBloodGroup) aiData.bloodGroup = em.autoBloodGroup;
+          if (em.autoAge) aiData.age = String(em.autoAge);
+          if (Array.isArray(em.autoMedications) && em.autoMedications.length > 0) {
+            hasAiAnalysis = true;
+            aiData.medications = em.autoMedications;
           }
-          // Transform medications
-          if (aiData.medications.length === 0 && latestAi.medications && latestAi.medications.length > 0) {
-            aiData.medications = latestAi.medications.map((med, idx) => ({
-              id: `ai_med_${idx}`,
-              name: typeof med === "string" ? med : med.name || med,
-              dose: med.dose || med.dosage || "As prescribed",
-            }));
+          if (Array.isArray(em.autoAllergies) && em.autoAllergies.length > 0) {
+            hasAiAnalysis = true;
+            aiData.allergies = em.autoAllergies;
           }
-          // Transform allergies
-          if (aiData.allergies.length === 0 && latestAi.allergies && latestAi.allergies.length > 0) {
-            aiData.allergies = latestAi.allergies.map((a, idx) => ({
-              id: `ai_allergy_${idx}`,
-              name: typeof a === "string" ? a : a.name || a,
-              severity: a.severity || "Check with doctor",
-            }));
+          if (Array.isArray(em.autoConditions) && em.autoConditions.length > 0) {
+            hasAiAnalysis = true;
+            aiData.conditions = em.autoConditions;
           }
         }
       } catch (error) {
-        console.error("Error fetching AI analysis:", error);
+        console.error("Error fetching emergency user data:", error);
       }
-
-      // Prepare autoFillData without overriding conditions
-      const { conditions: aiConditions, ...aiDataWithoutConditions } = aiData;
-      setAutoFillData({
-        conditions: newConditions,
-        lastCheckup: latestHbA1c?.testDate,
-        lastLab: latestHbA1c?.labName,
-        ...aiDataWithoutConditions,
-      });
-
-      return {
-        conditions: newConditions,
-        aiData,
-        lastCheckup: latestHbA1c?.testDate,
-        lastLab: latestHbA1c?.labName,
-      };
-    } catch (error) {
-      console.error("Auto-fill error:", error);
-      return { conditions: [], aiData: {} };
     }
+
+    // ── 3. Check if user has uploaded reports (even if not analyzed yet) ──────
+    let hasUploadedReports = false;
+    let latestReportUrl = null;
+    let latestReportMime = null;
+    try {
+      const reportsRef = collection(db, "users", userId, "reports");
+      const rq = query(reportsRef, orderBy("uploadedAt", "desc"), limit(1));
+      const rSnap = await getDocs(rq);
+      if (!rSnap.empty) {
+        hasUploadedReports = true;
+        const r = rSnap.docs[0].data();
+        latestReportUrl = r.url || null;
+        latestReportMime = r.type === "PDF" ? "application/pdf" : "image/jpeg";
+      }
+    } catch (error) {
+      console.error("Error checking uploaded reports:", error);
+    }
+
+    setAutoFillData({ ...aiData });
+
+    return {
+      conditions: aiData.conditions,
+      aiData,
+      hasAiAnalysis,
+      hasUploadedReports,
+      latestReportUrl,
+      latestReportMime,
+    };
   }, [userId]);
 
   // Apply auto-fill to card
+  // Returns: "filled" | "no_analysis" | "no_reports" | "already_filled"
   const applyAutoFill = async () => {
-    const { conditions, aiData } = await autoFillFromReports();
-    const updates = {};
-    
-    // Update conditions (merge with existing, replace auto-filled ones)
-    if (conditions.length > 0) {
-      updates.conditions = [
-        ...(cardData?.conditions || []).filter((c) => !c.isAutoFilled),
-        ...conditions,
-      ];
+    const result = await autoFillFromReports();
+    const { aiData = {}, hasAiAnalysis, hasUploadedReports, latestReportUrl, latestReportMime } = result || {};
+
+    // No AI analysis done yet — but tell caller if reports exist so they can guide user
+    if (!hasAiAnalysis) {
+      return hasUploadedReports
+        ? { status: "no_analysis", latestReportUrl, latestReportMime }
+        : { status: "no_reports" };
     }
-    
-    // Update blood group if empty
+
+    const aiMedications = Array.isArray(aiData.medications) ? aiData.medications : [];
+    const aiAllergies = Array.isArray(aiData.allergies) ? aiData.allergies : [];
+    const aiConditions = Array.isArray(aiData.conditions) ? aiData.conditions : [];
+    const updates = {};
+
     if (aiData.bloodGroup && (!cardData?.bloodGroup || cardData.bloodGroup === "")) {
       updates.bloodGroup = aiData.bloodGroup;
     }
-    
-    // Update age if empty
-    if (aiData.age && (!cardData?.age || cardData.age === "")) {
+    if (aiData.age && (!cardData?.age || cardData.age === "" || cardData.age === 0)) {
       updates.age = aiData.age;
     }
-    
-    // Update medications if empty
-    if (aiData.medications.length > 0 && (!cardData?.medications || cardData.medications.length === 0)) {
-      updates.medications = aiData.medications;
+    if (aiMedications.length > 0 && (!cardData?.medications || cardData.medications.length === 0)) {
+      updates.medications = aiMedications;
     }
-    
-    // Update allergies if empty
-    if (aiData.allergies.length > 0 && (!cardData?.allergies || cardData.allergies.length === 0)) {
-      updates.allergies = aiData.allergies;
+    if (aiAllergies.length > 0 && (!cardData?.allergies || cardData.allergies.length === 0)) {
+      updates.allergies = aiAllergies;
     }
-    
-    // Also update with AI conditions if no conditions from lab reports
-    if (aiData.conditions.length > 0 && conditions.length === 0) {
+    if (aiConditions.length > 0) {
       updates.conditions = [
         ...(cardData?.conditions || []).filter((c) => !c.isAutoFilled),
-        ...aiData.conditions.map((cond, idx) => ({
-          ...cond,
-          id: `ai_cond_${idx}`,
-          isAutoFilled: true,
-        })),
+        ...aiConditions,
       ];
     }
-    
-    // Only update if there are changes
+
     if (Object.keys(updates).length > 0) {
       const cardRef = doc(db, "users", userId, "emergencyCard", "data");
       await updateDoc(cardRef, {
@@ -267,9 +236,9 @@ export const useEmergencyCard = (userId) => {
         updatedAt: serverTimestamp(),
       });
       await fetchCardData();
-      return true;
+      return { status: "filled" };
     }
-    return false;
+    return { status: "already_filled" };
   };
 
   // Update card data
@@ -288,16 +257,16 @@ export const useEmergencyCard = (userId) => {
   };
 
   // Generate local PDF (for preview/download)
-  const generateLocalPDF = async () => {
-    const html = generatePDFHTML(cardData, autoFillData);
+  const generateLocalPDF = async (userData) => {
+    const html = generatePDFHTML(cardData, userData);
     const { uri } = await Print.printToFileAsync({ html });
     return uri;
   };
 
   // Upload PDF to Firebase Storage and return public URL for QR
-  const getPublicPDFUrl = async () => {
+  const getPublicPDFUrl = async (userData) => {
     try {
-      const uri = await generateLocalPDF();
+      const uri = await generateLocalPDF(userData);
       const response = await fetch(uri);
       const blob = await response.blob();
       const storageRef = ref(storage, `users/${userId}/emergency/LiveCard.pdf`);
@@ -310,13 +279,44 @@ export const useEmergencyCard = (userId) => {
     }
   };
 
-  // Create secure share link
-  const createShareLink = async (password) => {
+  // Create secure share link — uploads PDF, returns PIN-protected web URL
+  const createShareLink = async (userData, newPin) => {
     try {
-      const createShare = httpsCallable(functions, "createEmergencyShare");
-      const result = await createShare({ password });
-      setShareUrl(result.data.shareUrl);
-      return result.data;
+      // If a new PIN is provided, update the card PIN first
+      if (newPin && newPin !== cardData?.pin) {
+        const cardRef = doc(db, "users", userId, "emergencyCard", "data");
+        await updateDoc(cardRef, { pin: newPin, updatedAt: serverTimestamp() });
+        setCardData((prev) => ({ ...prev, pin: newPin }));
+      }
+
+      const activePin = newPin || cardData?.pin;
+
+      // Upload the PDF and get a direct Firebase Storage URL
+      const pdfUrl = await getPublicPDFUrl(userData);
+      if (!pdfUrl) throw new Error("Failed to upload emergency card PDF");
+
+      // Store the share record in Firestore (PIN is verified by the web page)
+      const token = `share_${userId}_${Date.now()}`;
+      const shareRef = doc(db, "emergencyShares", token);
+      await setDoc(shareRef, {
+        userId,
+        pdfUrl,
+        pin: activePin || "",
+        isActive: true,
+        createdAt: serverTimestamp(),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        accessLog: [],
+        accessCount: 0,
+      });
+
+      // Save token to user's emergency card
+      const cardRef = doc(db, "users", userId, "emergencyCard", "data");
+      await updateDoc(cardRef, { lastShareToken: token, updatedAt: serverTimestamp() });
+
+      // Use the PIN-protected web URL — this page asks for PIN before showing the PDF
+      const webUrl = `https://medvault-d2526.web.app/emergency/${token}`;
+      setShareUrl(webUrl);
+      return { shareUrl: webUrl, token, pin: activePin };
     } catch (error) {
       console.error("Share creation error:", error);
       throw error;
@@ -354,11 +354,14 @@ export const useEmergencyCard = (userId) => {
 };
 
 // HTML Generator for local PDF
-const generatePDFHTML = (cardData, autoFillData) => {
+const generatePDFHTML = (cardData, userData) => {
   const conditions = cardData?.conditions || [];
   const meds = cardData?.medications || [];
   const allergies = cardData?.allergies || [];
   const contacts = cardData?.contacts || [];
+  const patientName = userData?.fullName || cardData?.name || "Patient";
+  const patientId = userData?.patientId || cardData?.patientId || "N/A";
+  const phone = userData?.phone || userData?.phoneNumber || "";
 
   return `<!DOCTYPE html>
 <html>
@@ -400,8 +403,8 @@ const generatePDFHTML = (cardData, autoFillData) => {
     
     <div class="main-card">
       <div class="blood-badge">${cardData?.bloodGroup || "?"}</div>
-      <div class="patient-name">${cardData?.name || "Patient"}</div>
-      <div style="opacity: 0.9; margin-bottom: 15px;">ID: ${cardData?.patientId || "N/A"}</div>
+      <div class="patient-name">${patientName}</div>
+      <div style="opacity: 0.9; margin-bottom: 15px;">ID: ${patientId}${phone ? " • " + phone : ""}</div>
       <div class="vitals">
         <div class="vital">
           <div class="vital-label">Age</div>

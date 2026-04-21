@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { requestRecordingPermissionsAsync, setAudioModeAsync, RecordingPresets, AudioModule } from 'expo-audio';
-import { collection, onSnapshot, orderBy, query, limit, getCountFromServer } from "firebase/firestore";
+import { collection, onSnapshot, orderBy, query, limit, getCountFromServer, addDoc, serverTimestamp, updateDoc, doc, where } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useTheme } from "../context/ThemeContext";
 import {
@@ -18,7 +19,7 @@ import BottomTabBar from "../components/BottomTabBar";
 import SideMenu from "../components/SideMenu";
 import TrendChart from "../components/TrendChart";
 import { useUser } from "../context/UserContext";
-import { db } from "../firebaseConfig";
+import { db, storage } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
@@ -54,6 +55,50 @@ export default function HomeScreen({ route, navigation }) {
   const [recentReports, setRecentReports] = useState([]);
   const [aiAnalyses, setAiAnalyses] = useState([]);
   const [totalReports, setTotalReports] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+
+  // Listen for family notifications
+  useEffect(() => {
+    if (!userData?.uid) return;
+    const q = query(
+      collection(db, "users", userData.uid, "notifications"),
+      where("read", "==", false),
+      limit(20)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      docs.sort((a, b) => {
+        const ta = a.createdAt?.toMillis?.() ?? 0;
+        const tb = b.createdAt?.toMillis?.() ?? 0;
+        return tb - ta;
+      });
+      setNotifications(docs);
+    });
+    return unsub;
+  }, [userData?.uid]);
+
+  const openNotifications = async () => {
+    if (notifications.length === 0) {
+      Alert.alert("Notifications", "No new alerts from family members.");
+      return;
+    }
+    const messages = notifications
+      .map((n) => `From ${n.from}:\n${n.message}`)
+      .join("\n\n");
+    Alert.alert(`Alerts (${notifications.length})`, messages, [
+      {
+        text: "Mark All Read",
+        onPress: async () => {
+          await Promise.all(
+            notifications.map((n) =>
+              updateDoc(doc(db, "users", userData.uid, "notifications", n.id), { read: true })
+            )
+          );
+        },
+      },
+      { text: "Close", style: "cancel" },
+    ]);
+  };
 
   // Fetch AI analyses for TrendChart
   useEffect(() => {
@@ -180,18 +225,41 @@ export default function HomeScreen({ route, navigation }) {
     try {
       setIsRecording(false);
       await recorderRef.current.stop();
-      const newVoiceReport = {
-        id: Date.now().toString(),
-        title: "Voice Report",
-        date: "Today",
-        icon: "microphone",
-        color: "#FEF3C7",
-        iconColor: "#D97706",
-      };
-      setRecentReports([newVoiceReport, ...recentReports]);
+      const localUri = recorderRef.current.uri;
       recorderRef.current = null;
       setRecording(null);
-      Alert.alert("Saved", "Voice report added to your list.");
+
+      // BUG-02 Fix: Upload audio to Firebase Storage + save Firestore document
+      if (localUri && userData?.uid) {
+        try {
+          const timestamp = Date.now();
+          const storagePath = `users/${userData.uid}/voice-reports/${timestamp}.m4a`;
+          const storageRef = ref(storage, storagePath);
+
+          // Fetch blob from local file URI
+          const response = await fetch(localUri);
+          const blob = await response.blob();
+          await uploadBytes(storageRef, blob, { contentType: "audio/m4a" });
+          const downloadURL = await getDownloadURL(storageRef);
+
+          // Save to Firestore so it appears in Reports screen
+          await addDoc(collection(db, "users", userData.uid, "reports"), {
+            title: `Voice Report — ${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`,
+            url: downloadURL,
+            storagePath,
+            type: "Voice",
+            uploadedAt: serverTimestamp(),
+            uid: userData.uid,
+          });
+
+          Alert.alert("Saved", "Voice report saved to your health records.");
+        } catch (uploadErr) {
+          console.error("Voice upload error:", uploadErr);
+          Alert.alert("Upload Failed", "Could not save voice report. Please check your connection.");
+        }
+      } else {
+        Alert.alert("Saved", "Voice report recorded.");
+      }
     } catch (error) {
       console.error("Stop error:", error);
     }
@@ -215,9 +283,14 @@ export default function HomeScreen({ route, navigation }) {
         <View style={styles.navRight}>
           <TouchableOpacity
             style={styles.notifBtn}
-            onPress={() => Alert.alert("Notifications", "No new alerts")}
+            onPress={openNotifications}
           >
             <MaterialCommunityIcons name="bell-outline" size={26} color="#64748B" />
+            {notifications.length > 0 && (
+              <View style={styles.notifBadge}>
+                <Text style={styles.notifBadgeText}>{notifications.length}</Text>
+              </View>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.profileBtn}
@@ -487,7 +560,9 @@ const styles = StyleSheet.create({
     color: "#2E75B6",
   },
   navRight: { flexDirection: "row", alignItems: "center", gap: 15 },
-  notifBtn: { padding: 5 },
+  notifBtn: { padding: 5, position: "relative" },
+  notifBadge: { position: "absolute", top: 0, right: 0, backgroundColor: "#EF4444", borderRadius: 8, minWidth: 16, height: 16, justifyContent: "center", alignItems: "center", paddingHorizontal: 3 },
+  notifBadgeText: { color: "#FFF", fontSize: 10, fontWeight: "700" },
   profileBtn: {
     width: 40,
     height: 40,

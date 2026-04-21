@@ -17,27 +17,14 @@ import { useEmergencyCard } from "../hooks/useEmergencyCard";
 
 export default function EmergencyCardView({ route, navigation }) {
   const { userData } = useUser();
-  const { cardData, loading, shareUrl, generateLocalPDF, getPublicPDFUrl } = useEmergencyCard(
-    userData?.uid,
-  );
-  const [qrValue, setQrValue] = useState(route.params?.shareUrl || "");
-  const [generating, setGenerating] = useState(false);
-
-  useEffect(() => {
-    // Automatically upload the latest PDF to storage and embed the direct link in the QR code.
-    const setupQR = async () => {
-      const url = await getPublicPDFUrl();
-      if (url) setQrValue(url);
-    };
-    if (userData?.uid && qrValue === "") { // Or re-check if we need it
-      setupQR();
-    }
-  }, [userData?.uid]);
+  const { cardData, loading } = useEmergencyCard(userData?.uid);
+  // shareUrl must always be the PIN-protected web URL from EmergencyCardSettings
+  const [qrValue] = useState(route.params?.shareUrl || "");
 
   const handleCopyLink = () => {
     if (qrValue) {
       Clipboard.setString(qrValue);
-      Alert.alert("Copied", "Emergency link copied to clipboard");
+      Alert.alert("Copied!", "Emergency PDF link copied to clipboard.\nShare your PIN separately for access.");
     }
   };
 
@@ -45,27 +32,12 @@ export default function EmergencyCardView({ route, navigation }) {
     if (qrValue) {
       try {
         await Share.share({
-          message: `My Emergency Medical Record (Password protected): ${qrValue}`,
+          message: `🚨 Emergency Medical Record — ${userData?.fullName || "Patient"}\n\nOpen the link below and enter the PIN I will share with you separately:\n${qrValue}`,
           title: "Emergency Medical Record",
         });
       } catch (error) {
         Alert.alert("Error", "Could not share link");
       }
-    }
-  };
-
-  const handleDownloadPDF = async () => {
-    setGenerating(true);
-    try {
-      const uri = await generateLocalPDF();
-      Alert.alert("PDF Generated", "What would you like to do?", [
-        { text: "Share", onPress: () => Share.share({ url: uri }) },
-        { text: "OK", style: "cancel" },
-      ]);
-    } catch (error) {
-      Alert.alert("Error", "Failed to generate PDF");
-    } finally {
-      setGenerating(false);
     }
   };
 
@@ -84,9 +56,7 @@ export default function EmergencyCardView({ route, navigation }) {
           <MaterialCommunityIcons name="arrow-left" size={28} color="#2E75B6" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>EMERGENCY CARD</Text>
-        <TouchableOpacity onPress={handleDownloadPDF}>
-          <MaterialCommunityIcons name="download" size={28} color="#2E75B6" />
-        </TouchableOpacity>
+        <View style={{ width: 28 }} />
       </View>
 
       <View style={styles.content}>
@@ -209,8 +179,7 @@ export default function EmergencyCardView({ route, navigation }) {
         <View style={styles.securityInfo}>
           <MaterialCommunityIcons name="lock" size={20} color="#64748B" />
           <Text style={styles.securityText}>
-            • Link expires in 30 days{"\n"}• Password required for access{"\n"}•
-            Access attempts are logged{"\n"}• No password stored in PDF
+            • Link is PIN-protected — share your PIN separately{"\n"}• Never include the PIN in the same message as the link{"\n"}• Link valid for 30 days from creation
           </Text>
         </View>
       </View>

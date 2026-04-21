@@ -1,8 +1,9 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { collection, getDocs, limit, orderBy, query } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, limit, orderBy, query } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,23 +19,43 @@ export default function AIHistoryScreen({ navigation }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Real-time listener so deletions (from ReportsScreen cascade) reflect immediately
   useEffect(() => {
-    loadHistory();
-  }, []);
+    if (!userData?.uid) { setLoading(false); return; }
 
-  const loadHistory = async () => {
-    if (!userData?.uid) return;
-    setLoading(true);
-    try {
-      const q = query(
-        collection(db, "users", userData.uid, "aiAnalyses"),
-        orderBy("analyzedAt", "desc"),
-        limit(30)
-      );
-      const snap = await getDocs(q);
+    const q = query(
+      collection(db, "users", userData.uid, "aiAnalyses"),
+      orderBy("analyzedAt", "desc"),
+      limit(30)
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
       setHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch {}
-    setLoading(false);
+      setLoading(false);
+    }, () => setLoading(false));
+
+    return unsub;
+  }, [userData?.uid]);
+
+  const handleDeleteAnalysis = (item) => {
+    Alert.alert(
+      "Delete Analysis",
+      "Remove this AI analysis from your history?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, "users", userData.uid, "aiAnalyses", item.id));
+            } catch {
+              Alert.alert("Error", "Could not delete analysis.");
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -45,9 +66,7 @@ export default function AIHistoryScreen({ navigation }) {
           <MaterialCommunityIcons name="arrow-left" size={28} color="#1E293B" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Analysis History</Text>
-        <TouchableOpacity onPress={loadHistory}>
-          <MaterialCommunityIcons name="refresh" size={24} color="#8B5CF6" />
-        </TouchableOpacity>
+        <View style={{ width: 28 }} />
       </View>
 
       {loading ? (
@@ -143,10 +162,17 @@ export default function AIHistoryScreen({ navigation }) {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.actionBtn}
-                    onPress={() => navigation.navigate("AIChat")}
+                    onPress={() => navigation.navigate("AIChat", { preloadReport: item })}
                   >
                     <MaterialCommunityIcons name="robot-outline" size={14} color="#10B981" />
                     <Text style={[styles.actionBtnText, { color: "#10B981" }]}>Ask AI</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.deleteBtn]}
+                    onPress={() => handleDeleteAnalysis(item)}
+                  >
+                    <MaterialCommunityIcons name="trash-can-outline" size={14} color="#EF4444" />
+                    <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Delete</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -243,5 +269,6 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 12,
   },
+  deleteBtn: { backgroundColor: "#FEF2F2", marginLeft: "auto" },
   actionBtnText: { fontSize: 12, fontWeight: "700", color: "#8B5CF6" },
 });

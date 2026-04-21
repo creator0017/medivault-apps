@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { collection, deleteDoc, doc, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDocs, getCountFromServer, onSnapshot, orderBy, query, updateDoc, where, writeBatch } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { useEffect, useState } from "react";
 import {
@@ -86,10 +86,66 @@ export default function ReportsScreen({ navigation }) {
     }
   };
 
+  // Delete all derived data linked to a report (aiAnalyses + healthReports by sourceReportId)
+  const cascadeDeleteDerivedData = async (uid, reportId) => {
+    const batch = writeBatch(db);
+
+    // Delete linked AI analyses
+    const aiSnap = await getDocs(
+      query(collection(db, "users", uid, "aiAnalyses"), where("sourceReportId", "==", reportId))
+    );
+    aiSnap.forEach((d) => batch.delete(d.ref));
+
+    // Delete linked health report metrics
+    const hrSnap = await getDocs(
+      query(collection(db, "users", uid, "healthReports"), where("sourceReportId", "==", reportId))
+    );
+    hrSnap.forEach((d) => batch.delete(d.ref));
+
+    await batch.commit();
+  };
+
+  // After deletion, if no reports remain, wipe all AI-derived data (keep manual entries)
+  const clearAllDerivedDataIfEmpty = async (uid) => {
+    const remaining = await getCountFromServer(collection(db, "users", uid, "reports"));
+    if (remaining.data().count > 0) return;
+
+    // Wipe only AI-scanned aiAnalyses (all of them are from reports)
+    const aiBatch = writeBatch(db);
+    const aiAll = await getDocs(collection(db, "users", uid, "aiAnalyses"));
+    aiAll.forEach((d) => aiBatch.delete(d.ref));
+    await aiBatch.commit();
+
+    // Wipe only AI-scanned healthReports (preserve manual entries: source === "manual")
+    const hrBatch = writeBatch(db);
+    const hrAi = await getDocs(
+      query(collection(db, "users", uid, "healthReports"), where("source", "==", "ai_scan"))
+    );
+    hrAi.forEach((d) => hrBatch.delete(d.ref));
+    await hrBatch.commit();
+
+    // Clear emergency auto-fill fields and healthSummary from user doc
+    await updateDoc(doc(db, "users", uid), {
+      "emergency.autoConditions": [],
+      "emergency.autoMedications": [],
+      "emergency.autoAllergies": [],
+      "emergency.autoBloodGroup": "",
+      "emergency.autoAge": "",
+      "emergency.autoGender": "",
+      "healthSummary.metrics": [],
+      "healthSummary.summary": "",
+      "healthSummary.lab": "",
+    }).catch(() => {});
+
+    // Clear auto-filled conditions from emergency card (keep manually added ones)
+    const cardRef = doc(db, "users", uid, "emergencyCard", "data");
+    updateDoc(cardRef, { conditions: [] }).catch(() => {});
+  };
+
   const handleDelete = (item) => {
     Alert.alert(
       "Delete Report",
-      `Delete "${item.title}"? This cannot be undone.`,
+      `Delete "${item.title}"? This will also remove all AI analyses and health data extracted from this report.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -97,10 +153,19 @@ export default function ReportsScreen({ navigation }) {
           style: "destructive",
           onPress: async () => {
             try {
+              // 1. Delete the report doc
               await deleteDoc(doc(db, "users", userData.uid, "reports", item.id));
+
+              // 2. Delete Storage file
               if (item.storagePath) {
                 await deleteObject(ref(storage, item.storagePath)).catch(() => {});
               }
+
+              // 3. Cascade-delete derived data linked to this report
+              await cascadeDeleteDerivedData(userData.uid, item.id);
+
+              // 4. If no reports remain, wipe all derived/stale data
+              await clearAllDerivedDataIfEmpty(userData.uid);
             } catch {
               Alert.alert("Error", "Could not delete report.");
             }
@@ -169,7 +234,7 @@ export default function ReportsScreen({ navigation }) {
                 {(item.fileType === "Image" || item.fileType === "PDF") && (
                   <TouchableOpacity
                     style={styles.aiBtn}
-                    onPress={() => navigation.navigate("AI", { reportUri: item.url, reportMime: item.fileType === "PDF" ? "application/pdf" : "image/jpeg" })}
+                    onPress={() => navigation.navigate("AI", { reportUri: item.url, reportMime: item.fileType === "PDF" ? "application/pdf" : "image/jpeg", reportId: item.id })}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <MaterialCommunityIcons name="robot-outline" size={20} color="#8B5CF6" />

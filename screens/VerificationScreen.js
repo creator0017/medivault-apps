@@ -27,7 +27,7 @@ export default function VerificationScreen({ route, navigation }) {
       Alert.alert(
         "Session Error",
         "Missing verification data. Please sign up again.",
-        [{ text: "OK", onPress: () => navigation.replace("Login") }],
+        [{ text: "OK", onPress: () => navigation.navigate("Login") }],
       );
     }
   }, []);

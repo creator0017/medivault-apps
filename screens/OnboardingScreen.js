@@ -18,12 +18,9 @@ export default function OnboardingScreen({ navigation }) {
 
   const handleSkip = () => {
     if (user && userData?.phoneVerified) {
-      navigation.replace("Home");
-    } else if (user && !userData?.phoneVerified) {
-      // Signed in but not verified — go to Login which handles routing
-      navigation.replace("Login");
+      navigation.navigate("Home");
     } else {
-      navigation.replace("Login");
+      navigation.navigate("Login");
     }
   };
 
@@ -150,7 +147,7 @@ export default function OnboardingScreen({ navigation }) {
           onPress={() =>
             activePage < 2
               ? pagerRef.current.setPage(activePage + 1)
-              : navigation.replace("Login")
+              : navigation.navigate("Login")
           }
         >
           <Text style={styles.nextBtnText}>

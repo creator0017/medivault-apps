@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    KeyboardAvoidingView,
     Modal,
+    Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -34,7 +36,58 @@ export default function EmergencyCardSettings({ navigation }) {
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [password, setPassword] = useState("");
+  const [isChangingPin, setIsChangingPin] = useState(false);
   const [generating, setGenerating] = useState(false);
+
+  // ── Cross-platform add-item modals (replaces iOS-only Alert.prompt) ────────
+  // Medication modal
+  const [showMedModal, setShowMedModal] = useState(false);
+  const [newMedName, setNewMedName] = useState("");
+  const [newMedDose, setNewMedDose] = useState("");
+
+  // Allergy modal
+  const [showAllergyModal, setShowAllergyModal] = useState(false);
+  const [newAllergyName, setNewAllergyName] = useState("");
+
+  // Contact modal
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactPhone, setNewContactPhone] = useState("");
+  const [newContactRelation, setNewContactRelation] = useState("");
+
+  const handleAddMedication = () => {
+    if (!newMedName.trim()) return;
+    addItem("medications", {
+      name: newMedName.trim(),
+      dose: newMedDose.trim() || "As prescribed",
+    });
+    setNewMedName("");
+    setNewMedDose("");
+    setShowMedModal(false);
+  };
+
+  const handleAddAllergy = () => {
+    if (!newAllergyName.trim()) return;
+    addItem("allergies", { name: newAllergyName.trim(), severity: "Severe" });
+    setNewAllergyName("");
+    setShowAllergyModal(false);
+  };
+
+  const handleAddContact = () => {
+    if (!newContactName.trim() || !newContactPhone.trim()) {
+      Alert.alert("Required", "Name and phone number are required.");
+      return;
+    }
+    addItem("contacts", {
+      name: newContactName.trim(),
+      phone: newContactPhone.trim(),
+      relation: newContactRelation.trim() || "Family",
+    });
+    setNewContactName("");
+    setNewContactPhone("");
+    setNewContactRelation("");
+    setShowContactModal(false);
+  };
 
   useEffect(() => {
     if (cardData) {
@@ -48,6 +101,17 @@ export default function EmergencyCardSettings({ navigation }) {
         allergies: cardData.allergies || [],
         contacts: cardData.contacts || [],
       });
+
+      // Auto-fill silently on first load if card is empty and AI data is available
+      const isEmpty =
+        !cardData.bloodGroup &&
+        (!cardData.age || cardData.age === 0) &&
+        (!cardData.medications || cardData.medications.length === 0) &&
+        (!cardData.allergies || cardData.allergies.length === 0) &&
+        (!cardData.conditions || cardData.conditions.length === 0);
+      if (isEmpty && !cardData.lastAutoFill) {
+        applyAutoFill().catch(() => {});
+      }
     }
   }, [cardData]);
 
@@ -70,31 +134,91 @@ export default function EmergencyCardSettings({ navigation }) {
   };
 
   const handleAutoFill = async () => {
-    const success = await applyAutoFill();
-    if (success) {
-      Alert.alert("Success", "Auto-filled from latest lab reports");
-    } else {
-      Alert.alert("Info", "No recent lab reports found");
+    try {
+      const result = await applyAutoFill();
+      const status = result?.status;
+
+      if (status === "filled") {
+        Alert.alert("Success", "Emergency card auto-filled from your AI analysis.");
+      } else if (status === "already_filled") {
+        Alert.alert("Up to Date", "Your card already has all the available data from your reports.");
+      } else if (status === "no_analysis") {
+        Alert.alert(
+          "Analyze Report First",
+          "You have uploaded reports but haven't analyzed them with AI yet. Please go to your Reports and tap 'Analyze with AI' to extract your health data.",
+          [
+            { text: "OK" },
+            {
+              text: "Go to Reports",
+              onPress: () => navigation.navigate("Reports"),
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          "No Reports Found",
+          "Please upload a lab report first, then analyze it with AI so your health data can be extracted.",
+          [
+            { text: "OK" },
+            {
+              text: "Upload Report",
+              onPress: () => navigation.navigate("Upload"),
+            },
+          ]
+        );
+      }
+    } catch (error) {
+      Alert.alert("Error", "Failed to auto-fill. Please try again.");
     }
   };
 
   const generateSecureCard = async () => {
-    if (!password) {
-      Alert.alert("Error", "Please enter your account password");
+    if (!password || password.length !== 4 || !/^\d{4}$/.test(password)) {
+      Alert.alert("Invalid PIN", "Please enter exactly 4 digits (numbers only)");
       return;
     }
 
     setGenerating(true);
     try {
-      const result = await createShareLink(password);
+      // Pass the new PIN — hook will update it if different from existing
+      const result = await createShareLink(userData, password);
       setShowPasswordModal(false);
-      navigation.navigate("EmergencyCardView", { shareUrl: result.shareUrl });
+      setIsChangingPin(false);
+      Alert.alert(
+        "Card Generated!",
+        `Your emergency card is ready.\n\n🔑 PIN: ${password}\n\nAnyone who opens the link will need this PIN to view your records. Keep this PIN safe!`,
+        [{ text: "View Card", onPress: () => navigation.navigate("EmergencyCardView", { shareUrl: result.shareUrl }) }],
+      );
     } catch (error) {
       Alert.alert("Error", error.message || "Failed to generate secure card");
     } finally {
       setGenerating(false);
       setPassword("");
     }
+  };
+
+  const generateSecureCardWithPin = async (pin) => {
+    setGenerating(true);
+    try {
+      const result = await createShareLink(userData, pin);
+      setShowPasswordModal(false);
+      setIsChangingPin(false);
+      Alert.alert(
+        "Card Generated!",
+        `Your emergency card is ready.\n\n🔑 PIN: ${pin}\n\nAnyone who opens the link will need this PIN to view your records.`,
+        [{ text: "View Card", onPress: () => navigation.navigate("EmergencyCardView", { shareUrl: result.shareUrl }) }],
+      );
+    } catch (error) {
+      Alert.alert("Error", error.message || "Failed to generate secure card");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const openPinModal = () => {
+    setIsChangingPin(false);
+    setPassword(cardData?.pin || "");
+    setShowPasswordModal(true);
   };
 
   const addItem = (type, item) => {
@@ -221,28 +345,8 @@ export default function EmergencyCardSettings({ navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Current Medications</Text>
-            <TouchableOpacity
-              onPress={() => {
-                Alert.prompt(
-                  "Add Medication",
-                  "Enter medication name and dosage",
-                  (text) => {
-                    if (text) {
-                      const [name, ...doseParts] = text.split(" - ");
-                      addItem("medications", {
-                        name: name || text,
-                        dose: doseParts.join(" - ") || "As prescribed",
-                      });
-                    }
-                  },
-                );
-              }}
-            >
-              <MaterialCommunityIcons
-                name="plus-circle"
-                size={24}
-                color="#2E75B6"
-              />
+            <TouchableOpacity onPress={() => setShowMedModal(true)}>
+              <MaterialCommunityIcons name="plus-circle" size={24} color="#2E75B6" />
             </TouchableOpacity>
           </View>
           {formData.medications.map((med) => (
@@ -268,19 +372,8 @@ export default function EmergencyCardSettings({ navigation }) {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Allergies</Text>
-            <TouchableOpacity
-              onPress={() => {
-                Alert.prompt("Add Allergy", "Enter allergen name", (text) => {
-                  if (text)
-                    addItem("allergies", { name: text, severity: "Severe" });
-                });
-              }}
-            >
-              <MaterialCommunityIcons
-                name="plus-circle"
-                size={24}
-                color="#2E75B6"
-              />
+            <TouchableOpacity onPress={() => setShowAllergyModal(true)}>
+              <MaterialCommunityIcons name="plus-circle" size={24} color="#2E75B6" />
             </TouchableOpacity>
           </View>
           <View style={styles.tagsContainer}>
@@ -306,38 +399,8 @@ export default function EmergencyCardSettings({ navigation }) {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Emergency Contacts (Max 3)</Text>
             {formData.contacts.length < 3 && (
-              <TouchableOpacity
-                onPress={() => {
-                  if (formData.contacts.length >= 3) {
-                    Alert.alert("Limit reached", "Maximum 3 contacts allowed");
-                    return;
-                  }
-                  Alert.prompt("Contact Name", "Enter name", (name) => {
-                    if (name) {
-                      Alert.prompt("Phone Number", "Enter phone", (phone) => {
-                        if (phone) {
-                          Alert.prompt(
-                            "Relation",
-                            "e.g., Son, Doctor",
-                            (relation) => {
-                              addItem("contacts", {
-                                name,
-                                phone,
-                                relation: relation || "Family",
-                              });
-                            },
-                          );
-                        }
-                      });
-                    }
-                  });
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="plus-circle"
-                  size={24}
-                  color="#2E75B6"
-                />
+              <TouchableOpacity onPress={() => setShowContactModal(true)}>
+                <MaterialCommunityIcons name="plus-circle" size={24} color="#2E75B6" />
               </TouchableOpacity>
             )}
           </View>
@@ -363,7 +426,7 @@ export default function EmergencyCardSettings({ navigation }) {
         {/* Generate Button */}
         <TouchableOpacity
           style={styles.generateBtn}
-          onPress={() => setShowPasswordModal(true)}
+          onPress={openPinModal}
         >
           <MaterialCommunityIcons name="qrcode" size={24} color="white" />
           <Text style={styles.generateBtnText}>
@@ -372,47 +435,185 @@ export default function EmergencyCardSettings({ navigation }) {
         </TouchableOpacity>
       </View>
 
-      {/* Password Modal */}
+      {/* ── PIN Modal (Generate Secure Card) ── */}
       <Modal visible={showPasswordModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Verify Identity</Text>
-            <Text style={styles.modalText}>
-              Enter your account password to generate a secure shareable
-              emergency card.
+            <Text style={styles.modalTitle}>
+              {cardData?.pin && !isChangingPin ? "🔒 PIN Already Set" : "🔑 Set Emergency PIN"}
             </Text>
+
+            {cardData?.pin && !isChangingPin ? (
+              /* Existing PIN — offer to use it or change */
+              <>
+                <View style={styles.existingPinBox}>
+                  <Text style={styles.existingPinLabel}>Your current PIN</Text>
+                  <Text style={styles.existingPinValue}>{cardData.pin}</Text>
+                </View>
+                <Text style={styles.modalText}>
+                  This PIN is required to open your shared emergency card. Keep it safe and share it separately with trusted people.
+                </Text>
+                <TouchableOpacity
+                  style={styles.changePinLink}
+                  onPress={() => { setIsChangingPin(true); setPassword(""); }}
+                >
+                  <MaterialCommunityIcons name="pencil" size={16} color="#2E75B6" />
+                  <Text style={styles.changePinLinkText}>Set a different PIN</Text>
+                </TouchableOpacity>
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.cancelBtn]}
+                    onPress={() => { setShowPasswordModal(false); setPassword(""); setIsChangingPin(false); }}
+                  >
+                    <Text style={styles.cancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.confirmBtn]}
+                    onPress={() => generateSecureCardWithPin(cardData.pin)}
+                    disabled={generating}
+                  >
+                    {generating ? <ActivityIndicator color="white" /> : <Text style={styles.confirmBtnText}>Use This PIN</Text>}
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              /* No PIN or changing PIN */
+              <>
+                <Text style={styles.modalText}>
+                  {isChangingPin
+                    ? "Enter a new 4-digit PIN. This will replace your old PIN on the shared card."
+                    : "Choose any 4-digit number as your PIN. Anyone who opens the shared link will need to enter this PIN."}
+                </Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={password}
+                  onChangeText={(t) => setPassword(t.replace(/\D/g, "").slice(0, 4))}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  secureTextEntry={false}
+                  placeholder="Enter any 4-digit PIN (e.g. 4821)"
+                  autoFocus
+                />
+                <Text style={styles.pinHint}>e.g. 1234, 9087, 4512 — any 4 numbers you can remember</Text>
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.cancelBtn]}
+                    onPress={() => {
+                      if (isChangingPin && cardData?.pin) {
+                        setIsChangingPin(false);
+                        setPassword(cardData.pin);
+                      } else {
+                        setShowPasswordModal(false);
+                        setPassword("");
+                        setIsChangingPin(false);
+                      }
+                    }}
+                  >
+                    <Text style={styles.cancelBtnText}>{isChangingPin ? "Back" : "Cancel"}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.confirmBtn]}
+                    onPress={generateSecureCard}
+                    disabled={generating || password.length !== 4}
+                  >
+                    {generating ? <ActivityIndicator color="white" /> : <Text style={styles.confirmBtnText}>Set PIN & Generate</Text>}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── Add Medication Modal (Cross-platform, replaces Alert.prompt) ── */}
+      <Modal visible={showMedModal} transparent animationType="fade">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Medication</Text>
             <TextInput
               style={styles.modalInput}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              placeholder="Enter password"
-              autoCapitalize="none"
+              placeholder="Medication name (e.g. Metformin)"
+              value={newMedName}
+              onChangeText={setNewMedName}
+              autoFocus
+            />
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Dose (e.g. 500mg twice daily)"
+              value={newMedDose}
+              onChangeText={setNewMedDose}
             />
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.cancelBtn]}
-                onPress={() => {
-                  setShowPasswordModal(false);
-                  setPassword("");
-                }}
-              >
+              <TouchableOpacity style={[styles.modalBtn, styles.cancelBtn]} onPress={() => { setShowMedModal(false); setNewMedName(""); setNewMedDose(""); }}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.confirmBtn]}
-                onPress={generateSecureCard}
-                disabled={generating}
-              >
-                {generating ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <Text style={styles.confirmBtnText}>Generate</Text>
-                )}
+              <TouchableOpacity style={[styles.modalBtn, styles.confirmBtn]} onPress={handleAddMedication}>
+                <Text style={styles.confirmBtnText}>Add</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── Add Allergy Modal (Cross-platform, replaces Alert.prompt) ── */}
+      <Modal visible={showAllergyModal} transparent animationType="fade">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Allergy</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Allergen name (e.g. Penicillin)"
+              value={newAllergyName}
+              onChangeText={setNewAllergyName}
+              autoFocus
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={[styles.modalBtn, styles.cancelBtn]} onPress={() => { setShowAllergyModal(false); setNewAllergyName(""); }}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBtn, styles.confirmBtn]} onPress={handleAddAllergy}>
+                <Text style={styles.confirmBtnText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── Add Contact Modal (Cross-platform, replaces 3 nested Alert.prompts) ── */}
+      <Modal visible={showContactModal} transparent animationType="fade">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Emergency Contact</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Full name *"
+              value={newContactName}
+              onChangeText={setNewContactName}
+              autoFocus
+            />
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Phone number * (e.g. +91 98765 43210)"
+              value={newContactPhone}
+              onChangeText={setNewContactPhone}
+              keyboardType="phone-pad"
+            />
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Relation (e.g. Son, Doctor, Spouse)"
+              value={newContactRelation}
+              onChangeText={setNewContactRelation}
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={[styles.modalBtn, styles.cancelBtn]} onPress={() => { setShowContactModal(false); setNewContactName(""); setNewContactPhone(""); setNewContactRelation(""); }}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBtn, styles.confirmBtn]} onPress={handleAddContact}>
+                <Text style={styles.confirmBtnText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );
@@ -598,4 +799,24 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: "#64748B", fontWeight: "700" },
   confirmBtn: { backgroundColor: "#C54242" },
   confirmBtnText: { color: "white", fontWeight: "700" },
+  existingPinBox: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: "#BFDBFE",
+  },
+  existingPinLabel: { fontSize: 12, color: "#3B82F6", fontWeight: "700", textTransform: "uppercase", letterSpacing: 1 },
+  existingPinValue: { fontSize: 36, fontWeight: "900", color: "#1E40AF", letterSpacing: 8, marginTop: 4 },
+  changePinLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-end",
+    marginBottom: 16,
+  },
+  changePinLinkText: { color: "#2E75B6", fontWeight: "700", fontSize: 14 },
+  pinHint: { fontSize: 12, color: "#94A3B8", marginTop: -8, marginBottom: 16 },
 });

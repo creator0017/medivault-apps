@@ -1,9 +1,11 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { useEffect, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  ActivityIndicator,
   Alert,
   Image,
   ScrollView,
@@ -17,7 +19,7 @@ import { useTheme } from "../context/ThemeContext";
 import BottomTabBar from "../components/BottomTabBar";
 import EditModal from "../components/EditModal";
 import { useUser } from "../context/UserContext";
-import { db } from "../firebaseConfig";
+import { db, storage } from "../firebaseConfig";
 
 export default function ProfileScreen({ navigation }) {
   const { userData, signOut } = useUser();
@@ -34,17 +36,22 @@ export default function ProfileScreen({ navigation }) {
     allergies: "",
   });
 
-  // Load clinical data from Firestore in real-time
+  // Load clinical data + avatar URL from Firestore in real-time
   useEffect(() => {
     if (!userData?.uid) return;
     const unsub = onSnapshot(doc(db, "users", userData.uid), (snap) => {
       if (!snap.exists()) return;
-      const c = snap.data().clinical || {};
+      const data = snap.data();
+      const c = data.clinical || {};
       setClinical({
         condition: c.condition || "",
         meds: c.meds || "",
         allergies: c.allergies || "",
       });
+      // Restore persisted avatar URL from Firestore
+      if (data.avatarUrl) {
+        setProfile(prev => ({ ...prev, avatar: data.avatarUrl }));
+      }
     });
     return unsub;
   }, [userData?.uid]);
@@ -57,16 +64,44 @@ export default function ProfileScreen({ navigation }) {
     initialValue: "",
   });
 
+  const [avatarUploading, setAvatarUploading] = useState(false);
+
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 1,
+      quality: 0.85,
     });
 
     if (!result.canceled) {
-      setProfile({ ...profile, avatar: result.assets[0].uri });
+      const localUri = result.assets[0].uri;
+      // Show immediately in UI while uploading
+      setProfile({ ...profile, avatar: localUri });
+
+      // Upload to Firebase Storage
+      if (!userData?.uid) return;
+      setAvatarUploading(true);
+      try {
+        // Fetch blob from local file URI
+        const response = await fetch(localUri);
+        const blob = await response.blob();
+        const storageRef = ref(storage, `users/${userData.uid}/avatar.jpg`);
+        await uploadBytes(storageRef, blob, { contentType: "image/jpeg" });
+        const downloadURL = await getDownloadURL(storageRef);
+
+        // Persist download URL to Firestore
+        await updateDoc(doc(db, "users", userData.uid), {
+          avatarUrl: downloadURL,
+        });
+        // Update local state with permanent URL
+        setProfile({ ...profile, avatar: downloadURL });
+      } catch (e) {
+        console.log("Avatar upload error:", e);
+        Alert.alert("Upload Failed", "Could not save your profile picture. Please try again.");
+      } finally {
+        setAvatarUploading(false);
+      }
     }
   };
 
@@ -83,7 +118,11 @@ export default function ProfileScreen({ navigation }) {
   const handleEditSave = async (value) => {
     const field = editModal.field;
     if (field === "password") {
-      Alert.alert("Success", "Password update would require re-authentication.");
+      Alert.alert(
+        "Change Password",
+        "To change your password, please use the 'Forgot Password' option on the login screen. This will send a reset link to your registered email.",
+        [{ text: "OK" }]
+      );
     } else {
       setClinical({ ...clinical, [field]: value });
       // Persist to Firestore if user is authenticated
@@ -100,7 +139,8 @@ export default function ProfileScreen({ navigation }) {
     setEditModal({ ...editModal, visible: false });
   };
 
-  // C-3 Fix: Proper Firebase signOut
+  // BUG-08 Fix: Just call signOut() — App.js auth guard automatically redirects to
+  // the auth flow (Splash screen) when user becomes null. No navigation.replace needed.
   const handleLogout = () => {
     Alert.alert("Logout", "Are you sure?", [
       { text: "Cancel" },
@@ -109,7 +149,7 @@ export default function ProfileScreen({ navigation }) {
         onPress: async () => {
           try {
             await signOut();
-            navigation.replace("Login");
+            // Auth guard in App.js will automatically switch to auth screens
           } catch (error) {
             Alert.alert("Error", "Could not sign out. Please try again.");
           }
@@ -180,8 +220,13 @@ export default function ProfileScreen({ navigation }) {
                   color="#CBD5E1"
                 />
               )}
+              {avatarUploading && (
+                <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", alignItems: "center", borderRadius: 60 }}>
+                  <ActivityIndicator color="#FFF" />
+                </View>
+              )}
             </View>
-            <TouchableOpacity style={styles.editIcon} onPress={pickImage}>
+            <TouchableOpacity style={styles.editIcon} onPress={pickImage} disabled={avatarUploading}>
               <MaterialCommunityIcons name="camera" size={18} color="#FFF" />
             </TouchableOpacity>
           </View>

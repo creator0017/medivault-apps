@@ -62,7 +62,7 @@ export default function SideMenu({ visible, onClose, navigation }) {
           onClose();
           try {
             await signOut();
-            navigation.replace("Login");
+            // App.js switches to auth stack automatically when user becomes null
           } catch (error) {
             Alert.alert("Error", "Could not sign out.");
           }

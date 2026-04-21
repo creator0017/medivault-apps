@@ -1,8 +1,8 @@
-import * as Speech from "expo-speech";
-import { useEffect, useRef, useState } from "react";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useEffect, useState } from "react";
 import { Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { LineChart } from "react-native-chart-kit";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import useSarvamTTS from "../hooks/useSarvamTTS";
 
 const screenWidth = Dimensions.get("window").width;
 
@@ -34,17 +34,27 @@ const getStatusColor = (value, ref) => {
  *  reports — array of Firestore aiAnalyses docs, each with:
  *    { metrics: [{name, value, unit}], analyzedAt: Timestamp }
  */
+const TTS_LANGS = [
+  { code: "en-IN", label: "EN",     speaker: "tanya" },
+  { code: "hi-IN", label: "हिंदी",   speaker: "anand" },
+  { code: "ta-IN", label: "தமிழ்",  speaker: "anand" },
+  { code: "te-IN", label: "తెలుగు",  speaker: "anand" },
+  { code: "kn-IN", label: "ಕನ್ನಡ",  speaker: "anand" },
+  { code: "ml-IN", label: "മലയാളം", speaker: "anand" },
+  { code: "mr-IN", label: "मराठी",  speaker: "anand" },
+  { code: "gu-IN", label: "ગુજ",    speaker: "anand" },
+  { code: "bn-IN", label: "বাংলা",  speaker: "anand" },
+];
+
 export default function TrendChart({ reports = [] }) {
   const [selectedTest, setSelectedTest] = useState(null);
-  const [speaking, setSpeaking] = useState(false);
-  const isMounted = useRef(true);
-
-  useEffect(() => {
-    return () => {
-      isMounted.current = false;
-      Speech.stop();
-    };
-  }, []);
+  const [ttsLang, setTtsLang] = useState(TTS_LANGS[0]);
+  const [showLangPicker, setShowLangPicker] = useState(false);
+  const { speak, stop, speaking } = useSarvamTTS({
+    cacheFile: "trend_voice.wav",
+    languageCode: ttsLang.code,
+    speaker: ttsLang.speaker,
+  });
 
   // ── Derive available test types from saved AI analyses ─────────────────────
   const availableTests = (() => {
@@ -72,62 +82,65 @@ export default function TrendChart({ reports = [] }) {
     .filter(Boolean)
     .sort((a, b) => a.date - b.date);
 
-  // ── Voice explain the trend ────────────────────────────────────────────────
-  const handleSpeak = async () => {
-    if (speaking) {
-      await Speech.stop();
-      setSpeaking(false);
-      return;
-    }
-
-    let text;
+  // ── Build the trend explanation text ──────────────────────────────────────
+  const buildTrendScript = () => {
     if (!activeTest || dataPoints.length < 2) {
-      text =
-        "Not enough data to explain a trend yet. Upload more lab reports and use the AI analysis feature.";
-    } else {
-      const ref = REFERENCE_RANGES[activeTest];
-      const latest = dataPoints[dataPoints.length - 1].value;
-      const prev = dataPoints[dataPoints.length - 2].value;
-      const change = ((latest - prev) / prev) * 100;
-      const direction = latest > prev ? "increased" : "decreased";
-      const unit = ref?.unit || "";
-
-      let statusComment;
-      if (ref) {
-        if (latest > ref.max)
-          statusComment =
-            "which is above the normal range. Please consult your doctor soon.";
-        else if (latest < ref.min)
-          statusComment =
-            "which is below the normal range. Please consult your doctor soon.";
-        else statusComment = "which is within the normal range. Great job!";
-      } else {
-        statusComment = ".";
-      }
-
-      text =
-        `Your ${activeTest} trend shows ${dataPoints.length} readings. ` +
-        `The latest value is ${latest} ${unit}, ${statusComment} ` +
-        `Compared to your previous reading, it has ${direction} by ${Math.abs(
-          change
-        ).toFixed(1)} percent. ` +
-        (Math.abs(change) > 10
-          ? "This is a significant change. Talk to your doctor."
-          : "This is a small change. Keep monitoring regularly.");
+      return "Not enough data to show a trend yet. Upload more lab reports and run AI analysis to start tracking changes over time.";
     }
 
-    setSpeaking(true);
-    Speech.speak(text, {
-      language: "en-IN",
-      pitch: 1.0,
-      rate: 0.85,
-      onDone: () => {
-        if (isMounted.current) setSpeaking(false);
-      },
-      onError: () => {
-        if (isMounted.current) setSpeaking(false);
-      },
-    });
+    const ref    = REFERENCE_RANGES[activeTest];
+    const latest = dataPoints[dataPoints.length - 1].value;
+    const prev   = dataPoints[dataPoints.length - 2].value;
+    const unit   = ref?.unit || "";
+    const improved = ref ? (latest < prev && activeTest !== "HDL") || (latest > prev && activeTest === "HDL") : latest < prev;
+    const lines  = [];
+
+    // Status against normal range
+    if (ref) {
+      if (latest > ref.max) {
+        lines.push(`Your latest ${activeTest} is ${latest} ${unit}, which is above the normal range. The normal maximum is ${ref.max} ${unit}.`);
+        lines.push(`This means your ${activeTest} needs attention. Please speak to your doctor about what steps to take.`);
+      } else if (latest < ref.min) {
+        lines.push(`Your latest ${activeTest} is ${latest} ${unit}, which is below the normal range. The normal minimum is ${ref.min} ${unit}.`);
+        lines.push(`A low ${activeTest} can also be a concern. Your doctor can advise you on how to bring it back to a healthy level.`);
+      } else {
+        lines.push(`Your latest ${activeTest} is ${latest} ${unit}, which is within the normal range — between ${ref.min} and ${ref.max} ${unit}. That is great news!`);
+      }
+    } else {
+      lines.push(`Your latest ${activeTest} reading is ${latest} ${unit}.`);
+    }
+
+    // Trend direction — explain what movement means
+    if (improved) {
+      lines.push(`Compared to your previous reading of ${prev} ${unit}, this has improved. Your trend is moving in the right direction — keep following your current routine.`);
+    } else if (latest === prev) {
+      lines.push(`Your ${activeTest} has stayed the same as your previous reading of ${prev} ${unit}. Consistency is good, but aim to bring it closer to the ideal range if it is outside normal.`);
+    } else {
+      lines.push(`Compared to your previous reading of ${prev} ${unit}, this has gone up. That is a sign to pay closer attention to your diet, medications, or lifestyle habits.`);
+    }
+
+    // Extra context for key tests
+    if (activeTest === "HbA1c") {
+      lines.push("Remember, HbA1c reflects your average blood sugar over the past 3 months — so changes take time to show.");
+    } else if (activeTest === "Fasting Sugar") {
+      lines.push("For best results, always take your fasting sugar test after at least 8 hours without eating.");
+    } else if (activeTest === "Cholesterol" || activeTest === "LDL") {
+      lines.push("Reducing oily and processed foods and increasing physical activity can help bring cholesterol down.");
+    }
+
+    lines.push("Always consult your doctor before making changes to your treatment based on these trends.");
+    return lines.join(" ");
+  };
+
+  const handleSpeak = () => {
+    if (speaking) { stop(); return; }
+    speak(buildTrendScript());
+  };
+
+  // Stop voice when switching test
+  const handleSelectTest = (name) => {
+    if (speaking) stop();
+    setSelectedTest(name);
   };
 
   // ── Empty state ────────────────────────────────────────────────────────────
@@ -137,8 +150,7 @@ export default function TrendChart({ reports = [] }) {
         <MaterialCommunityIcons name="chart-line" size={40} color="#CBD5E1" />
         <Text style={styles.emptyTitle}>No trend data yet</Text>
         <Text style={styles.emptyText}>
-          Upload lab reports and tap "Analyze with AI" to start tracking your
-          health trends.
+          Upload lab reports and tap "Analyze with AI" to start tracking your health trends.
         </Text>
       </View>
     );
@@ -148,7 +160,45 @@ export default function TrendChart({ reports = [] }) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Health Trend</Text>
+      {/* Title + voice + language buttons */}
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Health Trend</Text>
+        <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+          <TouchableOpacity
+            style={[styles.voiceBtn, speaking && styles.voiceBtnActive]}
+            onPress={handleSpeak}
+          >
+            <MaterialCommunityIcons
+              name={speaking ? "stop-circle" : "volume-high"}
+              size={16}
+              color={speaking ? "#7C3AED" : "#8B5CF6"}
+            />
+            <Text style={[styles.voiceBtnText, speaking && { color: "#7C3AED" }]}>
+              {speaking ? "Stop" : "Listen"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.voiceBtn, { paddingHorizontal: 8 }]}
+            onPress={() => setShowLangPicker(v => !v)}
+          >
+            <MaterialCommunityIcons name="translate" size={14} color="#8B5CF6" />
+            <Text style={styles.voiceBtnText}>{ttsLang.label}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      {showLangPicker && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }} contentContainerStyle={{ gap: 6 }}>
+          {TTS_LANGS.map(lang => (
+            <TouchableOpacity
+              key={lang.code}
+              style={[styles.langChip, ttsLang.code === lang.code && styles.langChipActive]}
+              onPress={() => { setTtsLang(lang); setShowLangPicker(false); if (speaking) stop(); }}
+            >
+              <Text style={[styles.langChipText, ttsLang.code === lang.code && { color: "#FFF" }]}>{lang.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
 
       {/* ── Test selector pills ─────────────────────────────────── */}
       <ScrollView
@@ -161,18 +211,9 @@ export default function TrendChart({ reports = [] }) {
           <TouchableOpacity
             key={name}
             style={[styles.pill, activeTest === name && styles.pillActive]}
-            onPress={() => {
-              Speech.stop();
-              setSpeaking(false);
-              setSelectedTest(name);
-            }}
+            onPress={() => handleSelectTest(name)}
           >
-            <Text
-              style={[
-                styles.pillText,
-                activeTest === name && styles.pillTextActive,
-              ]}
-            >
+            <Text style={[styles.pillText, activeTest === name && styles.pillTextActive]}>
               {name}
             </Text>
           </TouchableOpacity>
@@ -198,10 +239,7 @@ export default function TrendChart({ reports = [] }) {
           <LineChart
             data={{
               labels: dataPoints.map((p) =>
-                p.date.toLocaleDateString("en-GB", {
-                  day: "numeric",
-                  month: "short",
-                })
+                p.date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
               ),
               datasets: [
                 {
@@ -209,12 +247,7 @@ export default function TrendChart({ reports = [] }) {
                   color: (opacity = 1) => {
                     const latest = dataPoints[dataPoints.length - 1].value;
                     const c = getStatusColor(latest, ref);
-                    return (
-                      c +
-                      Math.round(opacity * 255)
-                        .toString(16)
-                        .padStart(2, "0")
-                    );
+                    return c + Math.round(opacity * 255).toString(16).padStart(2, "0");
                   },
                   strokeWidth: 3,
                 },
@@ -237,44 +270,35 @@ export default function TrendChart({ reports = [] }) {
           />
 
           {/* Trend alert */}
-          <View
-            style={[
-              styles.alertBox,
-              {
-                backgroundColor:
-                  dataPoints[dataPoints.length - 1].value >
-                  dataPoints[dataPoints.length - 2].value
-                    ? "#FEF3C7"
-                    : "#DCFCE7",
-              },
-            ]}
-          >
-            <Text style={styles.alertText}>
-              {dataPoints[dataPoints.length - 1].value >
-              dataPoints[dataPoints.length - 2].value
-                ? `⚠️ ${activeTest} is increasing — monitor closely`
-                : `✅ ${activeTest} is improving — keep it up`}
-            </Text>
-          </View>
+          {(() => {
+            const latest = dataPoints[dataPoints.length - 1].value;
+            const prev   = dataPoints[dataPoints.length - 2].value;
+            const up = latest > prev;
+            const isGoodUp = activeTest === "HDL";
+            const isGood = isGoodUp ? up : !up;
+            return (
+              <View style={[styles.alertBox, { backgroundColor: isGood ? "#DCFCE7" : "#FEF3C7" }]}>
+                <Text style={styles.alertText}>
+                  {isGood
+                    ? `✅ ${activeTest} is improving — keep it up`
+                    : `⚠️ ${activeTest} is ${up ? "increasing" : "decreasing"} — monitor closely`}
+                </Text>
+              </View>
+            );
+          })()}
         </>
       )}
 
-      {/* ── Voice explain button ────────────────────────────────── */}
-      <TouchableOpacity
-        style={[styles.voiceBtn, speaking && styles.voiceBtnActive]}
-        onPress={handleSpeak}
-      >
-        <MaterialCommunityIcons
-          name={speaking ? "stop-circle" : "volume-high"}
-          size={18}
-          color={speaking ? "#7C3AED" : "#8B5CF6"}
-        />
-        <Text
-          style={[styles.voiceBtnText, speaking && { color: "#7C3AED" }]}
-        >
-          {speaking ? "Stop Voice" : "Explain this trend aloud"}
-        </Text>
-      </TouchableOpacity>
+      {/* Speaking indicator */}
+      {speaking && (
+        <View style={styles.speakingBar}>
+          <MaterialCommunityIcons name="waveform" size={16} color="#7C3AED" />
+          <Text style={styles.speakingText}>Arogyasathi AI is speaking…</Text>
+          <TouchableOpacity onPress={stop}>
+            <Text style={styles.stopLink}>Stop</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -290,14 +314,25 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 10,
   },
-  title: { fontSize: 17, fontWeight: "900", color: "#1E293B", marginBottom: 12 },
-  pillScroll: { marginBottom: 12 },
-  pill: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+  titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  title: { fontSize: 17, fontWeight: "900", color: "#1E293B" },
+  voiceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
     borderRadius: 20,
-    backgroundColor: "#F1F5F9",
+    borderWidth: 1.5,
+    borderColor: "#8B5CF6",
   },
+  voiceBtnActive: { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
+  voiceBtnText: { color: "#8B5CF6", fontWeight: "700", fontSize: 12 },
+  langChip: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 14, borderWidth: 1.5, borderColor: "#C4B5FD", backgroundColor: "#F5F3FF" },
+  langChipActive: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  langChipText: { fontSize: 11, fontWeight: "700", color: "#7C3AED" },
+  pillScroll: { marginBottom: 12 },
+  pill: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: "#F1F5F9" },
   pillActive: { backgroundColor: "#8B5CF6" },
   pillText: { fontSize: 12, fontWeight: "700", color: "#64748B" },
   pillTextActive: { color: "#FFF" },
@@ -306,25 +341,18 @@ const styles = StyleSheet.create({
   alertBox: { padding: 12, borderRadius: 12, marginBottom: 12 },
   alertText: { fontSize: 13, fontWeight: "700", color: "#92400E" },
   notEnoughData: { padding: 30, alignItems: "center" },
-  notEnoughText: {
-    color: "#94A3B8",
-    textAlign: "center",
-    fontWeight: "500",
-    fontSize: 13,
-  },
-  voiceBtn: {
+  notEnoughText: { color: "#94A3B8", textAlign: "center", fontWeight: "500", fontSize: 13 },
+  speakingBar: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: "#8B5CF6",
-    alignSelf: "flex-start",
+    backgroundColor: "#F5F3FF",
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 4,
   },
-  voiceBtnActive: { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
-  voiceBtnText: { color: "#8B5CF6", fontWeight: "700", fontSize: 13 },
+  speakingText: { flex: 1, fontSize: 13, color: "#7C3AED", fontWeight: "600" },
+  stopLink: { fontSize: 13, color: "#EF4444", fontWeight: "700" },
   emptyContainer: {
     padding: 30,
     alignItems: "center",
@@ -335,18 +363,6 @@ const styles = StyleSheet.create({
     borderStyle: "dashed",
     marginVertical: 10,
   },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#1E293B",
-    marginTop: 10,
-    marginBottom: 6,
-  },
-  emptyText: {
-    fontSize: 13,
-    color: "#64748B",
-    textAlign: "center",
-    fontWeight: "500",
-    lineHeight: 20,
-  },
+  emptyTitle: { fontSize: 15, fontWeight: "800", color: "#1E293B", marginTop: 10, marginBottom: 6 },
+  emptyText: { fontSize: 13, color: "#64748B", textAlign: "center", fontWeight: "500", lineHeight: 20 },
 });
